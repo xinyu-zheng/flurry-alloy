@@ -16,7 +16,7 @@ pub struct Iter<'g, K, V> {
 impl<'g, K, V> Iter<'g, K, V> {
     pub(crate) fn next_internal(&mut self) -> Option<(&'g K, Shared<'g, V>)> {
         let node = self.node_iter.next()?;
-        let value = node.value.load(Ordering::SeqCst, self.guard);
+        let value = node.value.load(Ordering::SeqCst);
         Some((&node.key, value))
     }
 }
@@ -59,7 +59,7 @@ impl<'g, K, V> Iterator for Values<'g, K, V> {
     type Item = &'g V;
     fn next(&mut self) -> Option<Self::Item> {
         let node = self.node_iter.next()?;
-        let value = node.value.load(Ordering::SeqCst, self.guard);
+        let value = node.value.load(Ordering::SeqCst);
         // safety: flurry does not drop or move until after guard drop
         let value = unsafe { value.deref() };
         Some(value)

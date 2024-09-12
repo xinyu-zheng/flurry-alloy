@@ -240,6 +240,11 @@
 )]
 #![warn(rust_2018_idioms)]
 #![allow(clippy::cognitive_complexity)]
+#![feature(gc)]
+use std::gc::GcAllocator;
+
+#[global_allocator]
+static A: GcAllocator = GcAllocator;
 
 mod map;
 mod map_ref;

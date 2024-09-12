@@ -4,6 +4,7 @@ use crate::node::*;
 use crate::reclaim::{self, Atomic, Collector, Guard, Shared};
 use std::borrow::Borrow;
 use std::fmt::Debug;
+use std::gc::Gc;
 use std::sync::atomic::Ordering;
 
 #[derive(Debug)]
@@ -54,7 +55,7 @@ impl<K, V> Table<K, V> {
     pub(crate) fn from(bins: Vec<Atomic<BinEntry<K, V>>>, collector: &Collector) -> Self {
         Self {
             bins: bins.into_boxed_slice(),
-            moved: Atomic::from(Shared::boxed(BinEntry::Moved, collector)),
+            moved: Atomic::from(Shared::boxed(BinEntry::Moved)),
             next_table: Atomic::null(),
         }
     }
@@ -85,7 +86,6 @@ impl<K, V> Table<K, V> {
                     for_table,
                     Ordering::SeqCst,
                     Ordering::Relaxed,
-                    guard,
                 ) {
                     Ok(_) => {}
                     Err(changed) => {
@@ -99,12 +99,12 @@ impl<K, V> Table<K, V> {
             }
         }
         // return a shared pointer to BinEntry::Moved
-        self.moved.load(Ordering::SeqCst, guard)
+        self.moved.load(Ordering::SeqCst)
     }
 
     pub(crate) fn find<'g, Q>(
         &'g self,
-        bin: &Linked<BinEntry<K, V>>,
+        bin: &Gc<BinEntry<K, V>>,
         hash: u64,
         key: &Q,
         guard: &'g Guard<'_>,
@@ -128,7 +128,7 @@ impl<K, V> Table<K, V> {
                         // is only used to return shared references
                         return Shared::from(node as *const _ as *mut _);
                     }
-                    let next = n.next.load(Ordering::SeqCst, guard);
+                    let next = n.next.load(Ordering::SeqCst);
                     if next.is_null() {
                         return Shared::null();
                     }
@@ -188,7 +188,7 @@ impl<K, V> Table<K, V> {
         let guard = unsafe { Guard::unprotected() };
 
         for bin in Vec::from(std::mem::replace(&mut self.bins, vec![].into_boxed_slice())) {
-            if bin.load(Ordering::SeqCst, &guard).is_null() {
+            if bin.load(Ordering::SeqCst).is_null() {
                 // bin was never used
                 continue;
             }
@@ -197,7 +197,7 @@ impl<K, V> Table<K, V> {
             // note that dropping the shared Moved, if it exists, is the responsibility
             // of `drop`
             // safety: same as above
-            let bin_entry = unsafe { bin.load(Ordering::SeqCst, &guard).deref() };
+            let bin_entry = unsafe { bin.load(Ordering::SeqCst).deref() };
             match **bin_entry {
                 BinEntry::Moved => {}
                 BinEntry::Node(_) => {
@@ -219,7 +219,7 @@ impl<K, V> Table<K, V> {
                         let _ = unsafe { node.value.into_box() };
 
                         // then we move to the next node
-                        if node.next.load(Ordering::SeqCst, &guard).is_null() {
+                        if node.next.load(Ordering::SeqCst).is_null() {
                             break;
                         }
                         p = unsafe { node.next.into_box() };
@@ -259,7 +259,7 @@ impl<K, V> Drop for Table<K, V> {
         // when testing, we check the above invariant. in production, we assume it to be true
         if cfg!(debug_assertions) {
             for bin in bins.iter() {
-                let bin = bin.load(Ordering::SeqCst, &guard);
+                let bin = bin.load(Ordering::SeqCst);
                 if bin.is_null() {
                     continue;
                 } else {
@@ -281,7 +281,7 @@ impl<K, V> Drop for Table<K, V> {
         // we need to drop the shared forwarding node (since it is heap allocated).
         // Note that this needs to happen _independently_ of whether or not there was
         // a previous call to drop_bins.
-        let moved = self.moved.swap(Shared::null(), Ordering::SeqCst, &guard);
+        let moved = self.moved.swap(Shared::null(), Ordering::SeqCst);
         assert!(
             !moved.is_null(),
             "self.moved is initialized together with the table"
@@ -304,7 +304,7 @@ impl<K, V> Table<K, V> {
 
     #[inline]
     pub(crate) fn bin<'g>(&'g self, i: usize, guard: &'g Guard<'_>) -> Shared<'g, BinEntry<K, V>> {
-        self.bins[i].load(Ordering::Acquire, guard)
+        self.bins[i].load(Ordering::Acquire)
     }
 
     #[inline]
@@ -316,7 +316,7 @@ impl<K, V> Table<K, V> {
         new: Shared<'g, BinEntry<K, V>>,
         guard: &'g Guard<'_>,
     ) -> Result<Shared<'g, BinEntry<K, V>>, reclaim::CompareExchangeError<'g, BinEntry<K, V>>> {
-        self.bins[i].compare_exchange(current, new, Ordering::AcqRel, Ordering::Acquire, guard)
+        self.bins[i].compare_exchange(current, new, Ordering::AcqRel, Ordering::Acquire)
     }
 
     #[inline]
@@ -326,6 +326,6 @@ impl<K, V> Table<K, V> {
 
     #[inline]
     pub(crate) fn next_table<'g>(&'g self, guard: &'g Guard<'_>) -> Shared<'g, Table<K, V>> {
-        self.next_table.load(Ordering::SeqCst, guard)
+        self.next_table.load(Ordering::SeqCst)
     }
 }

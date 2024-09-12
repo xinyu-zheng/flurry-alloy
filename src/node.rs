@@ -162,11 +162,11 @@ impl<K, V> TreeNode<K, V> {
             // first attempt to follow the tree order with the given hash
             match p_hash.cmp(&hash) {
                 std::cmp::Ordering::Greater => {
-                    p = p_deref.left.load(Ordering::SeqCst, guard);
+                    p = p_deref.left.load(Ordering::SeqCst);
                     continue;
                 }
                 std::cmp::Ordering::Less => {
-                    p = p_deref.right.load(Ordering::SeqCst, guard);
+                    p = p_deref.right.load(Ordering::SeqCst);
                     continue;
                 }
                 _ => {}
@@ -180,8 +180,8 @@ impl<K, V> TreeNode<K, V> {
             }
 
             // If the key does not match, we need to descend down the tree.
-            let p_left = p_deref.left.load(Ordering::SeqCst, guard);
-            let p_right = p_deref.right.load(Ordering::SeqCst, guard);
+            let p_left = p_deref.left.load(Ordering::SeqCst);
+            let p_right = p_deref.right.load(Ordering::SeqCst);
             // If one of the children is empty, there is only one child to check.
             if p_left.is_null() {
                 p = p_right;
@@ -254,7 +254,7 @@ where
         let mut x = bin;
         while !x.is_null() {
             let x_deref = unsafe { TreeNode::get_tree_node(x) };
-            let next = x_deref.node.next.load(Ordering::Relaxed, guard);
+            let next = x_deref.node.next.load(Ordering::Relaxed);
             x_deref.left.store(Shared::null(), Ordering::Relaxed);
             x_deref.right.store(Shared::null(), Ordering::Relaxed);
 
@@ -293,7 +293,7 @@ where
                     }
                     std::cmp::Ordering::Equal => unreachable!("one key references two nodes"),
                 }
-                .load(Ordering::Relaxed, guard);
+                .load(Ordering::Relaxed);
 
                 if p.is_null() {
                     x_deref.parent.store(xp, Ordering::Relaxed);
@@ -363,7 +363,7 @@ impl<K, V> TreeBin<K, V> {
                 {
                     // we won the race for the lock and get to return from blocking
                     if waiting {
-                        let waiter = self.waiter.swap(Shared::null(), Ordering::SeqCst, guard);
+                        let waiter = self.waiter.swap(Shared::null(), Ordering::SeqCst);
                         // safety: we are the only thread that modifies the
                         // `waiter` thread handle (reading threads only use it
                         // to notify us). Thus, having stored a valid value
@@ -383,7 +383,6 @@ impl<K, V> TreeBin<K, V> {
                         // the waiter, and then went directly into this branch. In that case, some
                         // other thread may simultaneously have noticed that we wanted to be woken
                         // up, and be trying to call `.unpark`. So, we `retire_shared` instead.
-                        unsafe { guard.retire_shared(waiter) };
                     }
                     return;
                 }
@@ -396,8 +395,8 @@ impl<K, V> TreeBin<K, V> {
                     .is_ok()
                 {
                     waiting = true;
-                    let current_thread = Shared::boxed(current(), collector);
-                    let waiter = self.waiter.swap(current_thread, Ordering::SeqCst, guard);
+                    let current_thread = Shared::boxed(current());
+                    let waiter = self.waiter.swap(current_thread, Ordering::SeqCst);
                     assert!(waiter.is_null());
                 }
             } else if waiting {
@@ -437,7 +436,7 @@ impl<K, V> TreeBin<K, V> {
         // the current thread was marked as active, we must be included in the reference count,
         // and the drop must happen _after_ we decrement the count (i.e drop our guard).
         let bin_deref = unsafe { bin.deref() }.as_tree_bin().unwrap();
-        let mut element = bin_deref.first.load(Ordering::SeqCst, guard);
+        let mut element = bin_deref.first.load(Ordering::SeqCst);
         while !element.is_null() {
             let s = bin_deref.lock_state.load(Ordering::SeqCst);
             if s & (WAITER | WRITER) != 0 {
@@ -456,7 +455,7 @@ impl<K, V> TreeBin<K, V> {
                 if element_deref.node.hash == hash && element_key.borrow() == key {
                     return element;
                 }
-                element = element_deref.node.next.load(Ordering::SeqCst, guard);
+                element = element_deref.node.next.load(Ordering::SeqCst);
             } else if bin_deref
                 .lock_state
                 .compare_exchange(s, s + READER, Ordering::SeqCst, Ordering::Relaxed)
@@ -464,7 +463,7 @@ impl<K, V> TreeBin<K, V> {
             {
                 // the current lock state indicates no waiter or writer and we
                 // acquired a read lock
-                let root = bin_deref.root.load(Ordering::SeqCst, guard);
+                let root = bin_deref.root.load(Ordering::SeqCst);
                 let p = if root.is_null() {
                     Shared::null()
                 } else {
@@ -473,7 +472,7 @@ impl<K, V> TreeBin<K, V> {
                 if bin_deref.lock_state.fetch_add(-READER, Ordering::SeqCst) == (READER | WAITER) {
                     // we were the last reader holding up a waiting writer, so
                     // we unpark the waiting writer by granting it a token
-                    let waiter = &bin_deref.waiter.load(Ordering::SeqCst, guard);
+                    let waiter = &bin_deref.waiter.load(Ordering::SeqCst);
                     if !waiter.is_null() {
                         // safety: thread handles are only dropped by the thread
                         // they represent _after_ it acquires the write lock.
@@ -525,8 +524,8 @@ impl<K, V> TreeBin<K, V> {
         // guard. Additionally, this method assumes `p` to be non-null.
         // Structurally, TreeNodes always point to TreeNodes, so this is sound.
         let p_deref = TreeNode::get_tree_node(p);
-        let next = p_deref.node.next.load(Ordering::SeqCst, guard);
-        let prev = p_deref.prev.load(Ordering::SeqCst, guard);
+        let next = p_deref.node.next.load(Ordering::SeqCst);
+        let prev = p_deref.prev.load(Ordering::SeqCst);
 
         // unlink traversal pointers
         if prev.is_null() {
@@ -544,7 +543,7 @@ impl<K, V> TreeBin<K, V> {
                 .store(prev, Ordering::SeqCst);
         }
 
-        if self.first.load(Ordering::SeqCst, guard).is_null() {
+        if self.first.load(Ordering::SeqCst).is_null() {
             // since the bin was not empty previously (it contained p),
             // `self.first` is `null` only if we just stored `null` via `next`.
             // In that case, we have removed the last node from this bin and
@@ -556,7 +555,7 @@ impl<K, V> TreeBin<K, V> {
         // if we are now too small to be a `TreeBin`, we don't need to worry
         // about restructuring the tree since the bin will be untreeified
         // anyway, so we check that
-        let mut root = self.root.load(Ordering::SeqCst, guard);
+        let mut root = self.root.load(Ordering::SeqCst);
         // TODO: Can `root` even be `null`?
         // The Java code has `NULL` checks for this, but in theory it should not be possible to
         // encounter a tree that has no root when we have its lock. It should always have at
@@ -565,18 +564,16 @@ impl<K, V> TreeBin<K, V> {
         if root.is_null()
             || TreeNode::get_tree_node(root)
                 .right
-                .load(Ordering::SeqCst, guard)
+                .load(Ordering::SeqCst)
                 .is_null()
         {
             return true;
         } else {
-            let root_left = TreeNode::get_tree_node(root)
-                .left
-                .load(Ordering::SeqCst, guard);
+            let root_left = TreeNode::get_tree_node(root).left.load(Ordering::SeqCst);
             if root_left.is_null()
                 || TreeNode::get_tree_node(root_left)
                     .left
-                    .load(Ordering::SeqCst, guard)
+                    .load(Ordering::SeqCst)
                     .is_null()
             {
                 return true;
@@ -595,17 +592,17 @@ impl<K, V> TreeBin<K, V> {
         // structure using a `Relaxed` ordering. The release of the write lock
         // will then synchronize with later readers who will see the new values.
         let replacement;
-        let p_left = p_deref.left.load(Ordering::Relaxed, guard);
-        let p_right = p_deref.right.load(Ordering::Relaxed, guard);
+        let p_left = p_deref.left.load(Ordering::Relaxed);
+        let p_right = p_deref.right.load(Ordering::Relaxed);
         if !p_left.is_null() && !p_right.is_null() {
             // find the smalles successor of `p`
             let mut successor = p_right;
             let mut successor_deref = TreeNode::get_tree_node(successor);
-            let mut successor_left = successor_deref.left.load(Ordering::Relaxed, guard);
+            let mut successor_left = successor_deref.left.load(Ordering::Relaxed);
             while !successor_left.is_null() {
                 successor = successor_left;
                 successor_deref = TreeNode::get_tree_node(successor);
-                successor_left = successor_deref.left.load(Ordering::Relaxed, guard);
+                successor_left = successor_deref.left.load(Ordering::Relaxed);
             }
             // swap colors
             let color = successor_deref.red.load(Ordering::Relaxed);
@@ -614,21 +611,21 @@ impl<K, V> TreeBin<K, V> {
                 .store(p_deref.red.load(Ordering::Relaxed), Ordering::Relaxed);
             p_deref.red.store(color, Ordering::Relaxed);
 
-            let successor_right = successor_deref.right.load(Ordering::Relaxed, guard);
-            let p_parent = p_deref.parent.load(Ordering::Relaxed, guard);
+            let successor_right = successor_deref.right.load(Ordering::Relaxed);
+            let p_parent = p_deref.parent.load(Ordering::Relaxed);
             if successor == p_right {
                 // `p` was the direct parent of the smallest successor.
                 // the two nodes will be swapped
                 p_deref.parent.store(successor, Ordering::Relaxed);
                 successor_deref.right.store(p, Ordering::Relaxed);
             } else {
-                let successor_parent = successor_deref.parent.load(Ordering::Relaxed, guard);
+                let successor_parent = successor_deref.parent.load(Ordering::Relaxed);
                 p_deref.parent.store(successor_parent, Ordering::Relaxed);
                 if !successor_parent.is_null() {
                     if successor
                         == TreeNode::get_tree_node(successor_parent)
                             .left
-                            .load(Ordering::Relaxed, guard)
+                            .load(Ordering::Relaxed)
                     {
                         TreeNode::get_tree_node(successor_parent)
                             .left
@@ -667,7 +664,7 @@ impl<K, V> TreeBin<K, V> {
             } else if p
                 == TreeNode::get_tree_node(p_parent)
                     .left
-                    .load(Ordering::Relaxed, guard)
+                    .load(Ordering::Relaxed)
             {
                 TreeNode::get_tree_node(p_parent)
                     .left
@@ -704,7 +701,7 @@ impl<K, V> TreeBin<K, V> {
 
         if replacement != p {
             // `p` (at its potentially new position) has a child, so we need to do a replacement.
-            let p_parent = p_deref.parent.load(Ordering::Relaxed, guard);
+            let p_parent = p_deref.parent.load(Ordering::Relaxed);
             TreeNode::get_tree_node(replacement)
                 .parent
                 .store(p_parent, Ordering::Relaxed);
@@ -712,7 +709,7 @@ impl<K, V> TreeBin<K, V> {
                 root = replacement;
             } else {
                 let p_parent_deref = TreeNode::get_tree_node(p_parent);
-                if p == p_parent_deref.left.load(Ordering::Relaxed, guard) {
+                if p == p_parent_deref.left.load(Ordering::Relaxed) {
                     p_parent_deref.left.store(replacement, Ordering::Relaxed);
                 } else {
                     p_parent_deref.right.store(replacement, Ordering::Relaxed);
@@ -734,21 +731,21 @@ impl<K, V> TreeBin<K, V> {
 
         if p == replacement {
             // `p` does _not_ have children, so we unlink it as a leaf.
-            let p_parent = p_deref.parent.load(Ordering::Relaxed, guard);
+            let p_parent = p_deref.parent.load(Ordering::Relaxed);
             if !p_parent.is_null() {
                 let p_parent_deref = TreeNode::get_tree_node(p_parent);
-                if p == p_parent_deref.left.load(Ordering::Relaxed, guard) {
+                if p == p_parent_deref.left.load(Ordering::Relaxed) {
                     TreeNode::get_tree_node(p_parent)
                         .left
                         .store(Shared::null(), Ordering::Relaxed);
-                } else if p == p_parent_deref.right.load(Ordering::Relaxed, guard) {
+                } else if p == p_parent_deref.right.load(Ordering::Relaxed) {
                     p_parent_deref
                         .right
                         .store(Shared::null(), Ordering::Relaxed);
                 }
                 p_deref.parent.store(Shared::null(), Ordering::Relaxed);
-                debug_assert!(p_deref.left.load(Ordering::Relaxed, guard).is_null());
-                debug_assert!(p_deref.right.load(Ordering::Relaxed, guard).is_null());
+                debug_assert!(p_deref.left.load(Ordering::Relaxed).is_null());
+                debug_assert!(p_deref.right.load(Ordering::Relaxed).is_null());
             }
         }
         self.unlock_root();
@@ -761,14 +758,11 @@ impl<K, V> TreeBin<K, V> {
         // `p` is actually dropped.
         #[allow(unused_unsafe)]
         unsafe {
-            if drop_value {
-                guard.retire_shared(p_deref.node.value.load(Ordering::Relaxed, guard));
-            }
-            guard.retire_shared(p);
+            if drop_value {}
         }
 
         if cfg!(debug_assertions) {
-            TreeNode::check_invariants(self.root.load(Ordering::SeqCst, guard), guard);
+            TreeNode::check_invariants(self.root.load(Ordering::SeqCst), guard);
         }
         false
     }
@@ -789,20 +783,17 @@ where
         guard: &'g Guard<'_>,
         collector: &Collector,
     ) -> Shared<'g, BinEntry<K, V>> {
-        let mut p = self.root.load(Ordering::SeqCst, guard);
+        let mut p = self.root.load(Ordering::SeqCst);
         if p.is_null() {
             // the current root is `null`, i.e. the tree is currently empty.
             // This, we simply insert the new entry as the root.
-            let tree_node = Shared::boxed(
-                BinEntry::TreeNode(TreeNode::new(
-                    hash,
-                    key,
-                    Atomic::from(value),
-                    Atomic::null(),
-                    Atomic::null(),
-                )),
-                collector,
-            );
+            let tree_node = Shared::boxed(BinEntry::TreeNode(TreeNode::new(
+                hash,
+                key,
+                Atomic::from(value),
+                Atomic::null(),
+                Atomic::null(),
+            )));
             self.root.store(tree_node, Ordering::Release);
             self.first.store(tree_node, Ordering::Release);
             return Shared::null();
@@ -853,24 +844,21 @@ where
                     // cannot occur here.
                 }
             }
-            .load(Ordering::SeqCst, guard);
+            .load(Ordering::SeqCst);
 
             if p.is_null() {
                 // we have reached a tree leaf, so the given key is not yet
                 // contained in the tree and we can add it at the correct
                 // position (which is here, since we arrived here by comparing
                 // hash and key of the new entry)
-                let first = self.first.load(Ordering::SeqCst, guard);
-                let x = Shared::boxed(
-                    BinEntry::TreeNode(TreeNode::new(
-                        hash,
-                        key,
-                        Atomic::from(value),
-                        Atomic::from(first),
-                        Atomic::from(xp),
-                    )),
-                    collector,
-                );
+                let first = self.first.load(Ordering::SeqCst);
+                let x = Shared::boxed(BinEntry::TreeNode(TreeNode::new(
+                    hash,
+                    key,
+                    Atomic::from(value),
+                    Atomic::from(first),
+                    Atomic::from(xp),
+                )));
                 self.first.store(x, Ordering::SeqCst);
                 if !first.is_null() {
                     unsafe { TreeNode::get_tree_node(first) }
@@ -900,11 +888,7 @@ where
                 } else {
                     self.lock_root(guard, collector);
                     self.root.store(
-                        TreeNode::balance_insertion(
-                            self.root.load(Ordering::Relaxed, guard),
-                            x,
-                            guard,
-                        ),
+                        TreeNode::balance_insertion(self.root.load(Ordering::Relaxed), x, guard),
                         Ordering::Relaxed,
                     );
                     self.unlock_root();
@@ -914,7 +898,7 @@ where
         }
 
         if cfg!(debug_assertions) {
-            TreeNode::check_invariants(self.root.load(Ordering::SeqCst, guard), guard);
+            TreeNode::check_invariants(self.root.load(Ordering::SeqCst), guard);
         }
         Shared::null()
     }
@@ -971,7 +955,7 @@ impl<K, V> TreeBin<K, V> {
         // swap out first pointer so nodes will not get dropped again when
         // `tree_bin` is dropped
         let guard = Guard::unprotected();
-        let p = self.first.swap(Shared::null(), Ordering::Relaxed, &guard);
+        let p = self.first.swap(Shared::null(), Ordering::Relaxed);
         Self::drop_tree_nodes(p, drop_values, &guard);
     }
 
@@ -994,7 +978,7 @@ impl<K, V> TreeBin<K, V> {
                     let _ = tree_node.node.value.into_box();
                 }
                 // then we move to the next node
-                p = tree_node.node.next.load(Ordering::SeqCst, guard);
+                p = tree_node.node.next.load(Ordering::SeqCst);
             } else {
                 unreachable!("Trees can only ever contain TreeNodes");
             };
@@ -1044,26 +1028,26 @@ impl<K, V> TreeNode<K, V> {
         // at least as long as we hold onto the guard.
         // Structurally, TreeNodes always point to TreeNodes, so this is sound.
         let p_deref = treenode!(p);
-        let right = p_deref.right.load(Ordering::Relaxed, guard);
+        let right = p_deref.right.load(Ordering::Relaxed);
         if right.is_null() {
             // there is no right successor to rotate left
             return root;
         }
         let right_deref = treenode!(right);
-        let right_left = right_deref.left.load(Ordering::Relaxed, guard);
+        let right_left = right_deref.left.load(Ordering::Relaxed);
         p_deref.right.store(right_left, Ordering::Relaxed);
         if !right_left.is_null() {
             treenode!(right_left).parent.store(p, Ordering::Relaxed);
         }
 
-        let p_parent = p_deref.parent.load(Ordering::Relaxed, guard);
+        let p_parent = p_deref.parent.load(Ordering::Relaxed);
         right_deref.parent.store(p_parent, Ordering::Relaxed);
         if p_parent.is_null() {
             root = right;
             right_deref.red.store(false, Ordering::Relaxed);
         } else {
             let p_parent_deref = treenode!(p_parent);
-            if p_parent_deref.left.load(Ordering::Relaxed, guard) == p {
+            if p_parent_deref.left.load(Ordering::Relaxed) == p {
                 p_parent_deref.left.store(right, Ordering::Relaxed);
             } else {
                 p_parent_deref.right.store(right, Ordering::Relaxed);
@@ -1089,26 +1073,26 @@ impl<K, V> TreeNode<K, V> {
         // at least as long as we hold onto the guard.
         // Structurally, TreeNodes always point to TreeNodes, so this is sound.
         let p_deref = treenode!(p);
-        let left = p_deref.left.load(Ordering::Relaxed, guard);
+        let left = p_deref.left.load(Ordering::Relaxed);
         if left.is_null() {
             // there is no left successor to rotate right
             return root;
         }
         let left_deref = treenode!(left);
-        let left_right = left_deref.right.load(Ordering::Relaxed, guard);
+        let left_right = left_deref.right.load(Ordering::Relaxed);
         p_deref.left.store(left_right, Ordering::Relaxed);
         if !left_right.is_null() {
             treenode!(left_right).parent.store(p, Ordering::Relaxed);
         }
 
-        let p_parent = p_deref.parent.load(Ordering::Relaxed, guard);
+        let p_parent = p_deref.parent.load(Ordering::Relaxed);
         left_deref.parent.store(p_parent, Ordering::Relaxed);
         if p_parent.is_null() {
             root = left;
             left_deref.red.store(false, Ordering::Relaxed);
         } else {
             let p_parent_deref = treenode!(p_parent);
-            if p_parent_deref.right.load(Ordering::Relaxed, guard) == p {
+            if p_parent_deref.right.load(Ordering::Relaxed) == p {
                 p_parent_deref.right.store(left, Ordering::Relaxed);
             } else {
                 p_parent_deref.left.store(left, Ordering::Relaxed);
@@ -1137,22 +1121,18 @@ impl<K, V> TreeNode<K, V> {
         let mut x_parent_parent_left: Shared<'_, BinEntry<K, V>>;
         let mut x_parent_parent_right: Shared<'_, BinEntry<K, V>>;
         loop {
-            x_parent = treenode!(x).parent.load(Ordering::Relaxed, guard);
+            x_parent = treenode!(x).parent.load(Ordering::Relaxed);
             if x_parent.is_null() {
                 treenode!(x).red.store(false, Ordering::Relaxed);
                 return x;
             }
-            x_parent_parent = treenode!(x_parent).parent.load(Ordering::Relaxed, guard);
+            x_parent_parent = treenode!(x_parent).parent.load(Ordering::Relaxed);
             if !treenode!(x_parent).red.load(Ordering::Relaxed) || x_parent_parent.is_null() {
                 return root;
             }
-            x_parent_parent_left = treenode!(x_parent_parent)
-                .left
-                .load(Ordering::Relaxed, guard);
+            x_parent_parent_left = treenode!(x_parent_parent).left.load(Ordering::Relaxed);
             if x_parent == x_parent_parent_left {
-                x_parent_parent_right = treenode!(x_parent_parent)
-                    .right
-                    .load(Ordering::Relaxed, guard);
+                x_parent_parent_right = treenode!(x_parent_parent).right.load(Ordering::Relaxed);
                 if !x_parent_parent_right.is_null()
                     && treenode!(x_parent_parent_right).red.load(Ordering::Relaxed)
                 {
@@ -1165,14 +1145,14 @@ impl<K, V> TreeNode<K, V> {
                         .store(true, Ordering::Relaxed);
                     x = x_parent_parent;
                 } else {
-                    if x == treenode!(x_parent).right.load(Ordering::Relaxed, guard) {
+                    if x == treenode!(x_parent).right.load(Ordering::Relaxed) {
                         x = x_parent;
                         root = Self::rotate_left(root, x, guard);
-                        x_parent = treenode!(x).parent.load(Ordering::Relaxed, guard);
+                        x_parent = treenode!(x).parent.load(Ordering::Relaxed);
                         x_parent_parent = if x_parent.is_null() {
                             Shared::null()
                         } else {
-                            treenode!(x_parent).parent.load(Ordering::Relaxed, guard)
+                            treenode!(x_parent).parent.load(Ordering::Relaxed)
                         };
                     }
                     if !x_parent.is_null() {
@@ -1197,14 +1177,14 @@ impl<K, V> TreeNode<K, V> {
                     .store(true, Ordering::Relaxed);
                 x = x_parent_parent;
             } else {
-                if x == treenode!(x_parent).left.load(Ordering::Relaxed, guard) {
+                if x == treenode!(x_parent).left.load(Ordering::Relaxed) {
                     x = x_parent;
                     root = Self::rotate_right(root, x, guard);
-                    x_parent = treenode!(x).parent.load(Ordering::Relaxed, guard);
+                    x_parent = treenode!(x).parent.load(Ordering::Relaxed);
                     x_parent_parent = if x_parent.is_null() {
                         Shared::null()
                     } else {
-                        treenode!(x_parent).parent.load(Ordering::Relaxed, guard)
+                        treenode!(x_parent).parent.load(Ordering::Relaxed)
                     };
                 }
                 if !x_parent.is_null() {
@@ -1237,7 +1217,7 @@ impl<K, V> TreeNode<K, V> {
             if x.is_null() || x == root {
                 return root;
             }
-            x_parent = treenode!(x).parent.load(Ordering::Relaxed, guard);
+            x_parent = treenode!(x).parent.load(Ordering::Relaxed);
             if x_parent.is_null() {
                 treenode!(x).red.store(false, Ordering::Relaxed);
                 return x;
@@ -1245,9 +1225,9 @@ impl<K, V> TreeNode<K, V> {
                 treenode!(x).red.store(false, Ordering::Relaxed);
                 return root;
             }
-            x_parent_left = treenode!(x_parent).left.load(Ordering::Relaxed, guard);
+            x_parent_left = treenode!(x_parent).left.load(Ordering::Relaxed);
             if x_parent_left == x {
-                x_parent_right = treenode!(x_parent).right.load(Ordering::Relaxed, guard);
+                x_parent_right = treenode!(x_parent).right.load(Ordering::Relaxed);
                 if !x_parent_right.is_null()
                     && treenode!(x_parent_right).red.load(Ordering::Relaxed)
                 {
@@ -1256,23 +1236,19 @@ impl<K, V> TreeNode<K, V> {
                         .store(false, Ordering::Relaxed);
                     treenode!(x_parent).red.store(true, Ordering::Relaxed);
                     root = Self::rotate_left(root, x_parent, guard);
-                    x_parent = treenode!(x).parent.load(Ordering::Relaxed, guard);
+                    x_parent = treenode!(x).parent.load(Ordering::Relaxed);
                     x_parent_right = if x_parent.is_null() {
                         Shared::null()
                     } else {
-                        treenode!(x_parent).right.load(Ordering::Relaxed, guard)
+                        treenode!(x_parent).right.load(Ordering::Relaxed)
                     };
                 }
                 if x_parent_right.is_null() {
                     x = x_parent;
                     continue;
                 }
-                let s_left = treenode!(x_parent_right)
-                    .left
-                    .load(Ordering::Relaxed, guard);
-                let mut s_right = treenode!(x_parent_right)
-                    .right
-                    .load(Ordering::Relaxed, guard);
+                let s_left = treenode!(x_parent_right).left.load(Ordering::Relaxed);
+                let mut s_right = treenode!(x_parent_right).right.load(Ordering::Relaxed);
 
                 if (s_right.is_null() || !treenode!(s_right).red.load(Ordering::Relaxed))
                     && (s_left.is_null() || !treenode!(s_left).red.load(Ordering::Relaxed))
@@ -1287,11 +1263,11 @@ impl<K, V> TreeNode<K, V> {
                     }
                     treenode!(x_parent_right).red.store(true, Ordering::Relaxed);
                     root = Self::rotate_right(root, x_parent_right, guard);
-                    x_parent = treenode!(x).parent.load(Ordering::Relaxed, guard);
+                    x_parent = treenode!(x).parent.load(Ordering::Relaxed);
                     x_parent_right = if x_parent.is_null() {
                         Shared::null()
                     } else {
-                        treenode!(x_parent).right.load(Ordering::Relaxed, guard)
+                        treenode!(x_parent).right.load(Ordering::Relaxed)
                     };
                 }
                 if !x_parent_right.is_null() {
@@ -1303,9 +1279,7 @@ impl<K, V> TreeNode<K, V> {
                         },
                         Ordering::Relaxed,
                     );
-                    s_right = treenode!(x_parent_right)
-                        .right
-                        .load(Ordering::Relaxed, guard);
+                    s_right = treenode!(x_parent_right).right.load(Ordering::Relaxed);
                     if !s_right.is_null() {
                         treenode!(s_right).red.store(false, Ordering::Relaxed);
                     }
@@ -1321,21 +1295,19 @@ impl<K, V> TreeNode<K, V> {
                     treenode!(x_parent_left).red.store(false, Ordering::Relaxed);
                     treenode!(x_parent).red.store(true, Ordering::Relaxed);
                     root = Self::rotate_right(root, x_parent, guard);
-                    x_parent = treenode!(x).parent.load(Ordering::Relaxed, guard);
+                    x_parent = treenode!(x).parent.load(Ordering::Relaxed);
                     x_parent_left = if x_parent.is_null() {
                         Shared::null()
                     } else {
-                        treenode!(x_parent).left.load(Ordering::Relaxed, guard)
+                        treenode!(x_parent).left.load(Ordering::Relaxed)
                     };
                 }
                 if x_parent_left.is_null() {
                     x = x_parent;
                     continue;
                 }
-                let mut s_left = treenode!(x_parent_left).left.load(Ordering::Relaxed, guard);
-                let s_right = treenode!(x_parent_left)
-                    .right
-                    .load(Ordering::Relaxed, guard);
+                let mut s_left = treenode!(x_parent_left).left.load(Ordering::Relaxed);
+                let s_right = treenode!(x_parent_left).right.load(Ordering::Relaxed);
 
                 if (s_left.is_null() || !treenode!(s_left).red.load(Ordering::Relaxed))
                     && (s_right.is_null() || !treenode!(s_right).red.load(Ordering::Relaxed))
@@ -1350,11 +1322,11 @@ impl<K, V> TreeNode<K, V> {
                     }
                     treenode!(x_parent_left).red.store(true, Ordering::Relaxed);
                     root = Self::rotate_left(root, x_parent_left, guard);
-                    x_parent = treenode!(x).parent.load(Ordering::Relaxed, guard);
+                    x_parent = treenode!(x).parent.load(Ordering::Relaxed);
                     x_parent_left = if x_parent.is_null() {
                         Shared::null()
                     } else {
-                        treenode!(x_parent).left.load(Ordering::Relaxed, guard)
+                        treenode!(x_parent).left.load(Ordering::Relaxed)
                     };
                 }
                 if !x_parent_left.is_null() {
@@ -1366,7 +1338,7 @@ impl<K, V> TreeNode<K, V> {
                         },
                         Ordering::Relaxed,
                     );
-                    s_left = treenode!(x_parent_left).left.load(Ordering::Relaxed, guard);
+                    s_left = treenode!(x_parent_left).left.load(Ordering::Relaxed);
                     if !s_left.is_null() {
                         treenode!(s_left).red.store(false, Ordering::Relaxed);
                     }
@@ -1387,16 +1359,16 @@ impl<K, V> TreeNode<K, V> {
         // at least as long as we hold onto the guard.
         // Structurally, TreeNodes always point to TreeNodes, so this is sound.
         let t_deref = treenode!(t);
-        let t_parent = t_deref.parent.load(Ordering::Relaxed, guard);
-        let t_left = t_deref.left.load(Ordering::Relaxed, guard);
-        let t_right = t_deref.right.load(Ordering::Relaxed, guard);
-        let t_back = t_deref.prev.load(Ordering::Relaxed, guard);
-        let t_next = t_deref.node.next.load(Ordering::Relaxed, guard);
+        let t_parent = t_deref.parent.load(Ordering::Relaxed);
+        let t_left = t_deref.left.load(Ordering::Relaxed);
+        let t_right = t_deref.right.load(Ordering::Relaxed);
+        let t_back = t_deref.prev.load(Ordering::Relaxed);
+        let t_next = t_deref.node.next.load(Ordering::Relaxed);
 
         if !t_back.is_null() {
             let t_back_deref = treenode!(t_back);
             assert_eq!(
-                t_back_deref.node.next.load(Ordering::Relaxed, guard),
+                t_back_deref.node.next.load(Ordering::Relaxed),
                 t,
                 "A TreeNode's `prev` node did not point back to it as its `next` node"
             );
@@ -1404,7 +1376,7 @@ impl<K, V> TreeNode<K, V> {
         if !t_next.is_null() {
             let t_next_deref = treenode!(t_next);
             assert_eq!(
-                t_next_deref.prev.load(Ordering::Relaxed, guard),
+                t_next_deref.prev.load(Ordering::Relaxed),
                 t,
                 "A TreeNode's `next` node did not point back to it as its `prev` node"
             );
@@ -1412,15 +1384,15 @@ impl<K, V> TreeNode<K, V> {
         if !t_parent.is_null() {
             let t_parent_deref = treenode!(t_parent);
             assert!(
-                t_parent_deref.left.load(Ordering::Relaxed, guard) == t
-                    || t_parent_deref.right.load(Ordering::Relaxed, guard) == t,
+                t_parent_deref.left.load(Ordering::Relaxed) == t
+                    || t_parent_deref.right.load(Ordering::Relaxed) == t,
                 "A TreeNode's `parent` node did not point back to it as either its `left` or `right` child"
             );
         }
         if !t_left.is_null() {
             let t_left_deref = treenode!(t_left);
             assert_eq!(
-                t_left_deref.parent.load(Ordering::Relaxed, guard),
+                t_left_deref.parent.load(Ordering::Relaxed),
                 t,
                 "A TreeNode's `left` child did not point back to it as its `parent` node"
             );
@@ -1432,7 +1404,7 @@ impl<K, V> TreeNode<K, V> {
         if !t_right.is_null() {
             let t_right_deref = treenode!(t_right);
             assert_eq!(
-                t_right_deref.parent.load(Ordering::Relaxed, guard),
+                t_right_deref.parent.load(Ordering::Relaxed),
                 t,
                 "A TreeNode's `right` child did not point back to it as its `parent` node"
             );
@@ -1469,7 +1441,7 @@ mod tests {
         Node {
             hash,
             key,
-            value: Atomic::from(Shared::boxed(value, collector)),
+            value: Atomic::from(Shared::boxed(value)),
             next: Atomic::null(),
             lock: Mutex::new(()),
         }
@@ -1483,10 +1455,8 @@ mod tests {
         let node2 = new_node(4, 5, 6, &collector);
         let entry2 = BinEntry::Node(node2);
         let node1 = new_node(1, 2, 3, &collector);
-        node1
-            .next
-            .store(Shared::boxed(entry2, &collector), Ordering::SeqCst);
-        let entry1 = Shared::boxed(BinEntry::Node(node1), &collector);
+        node1.next.store(Shared::boxed(entry2), Ordering::SeqCst);
+        let entry1 = Shared::boxed(BinEntry::Node(node1));
         let mut tab = Table::from(vec![Atomic::from(entry1)], &collector);
 
         // safety: we have not yet dropped entry1
@@ -1499,7 +1469,7 @@ mod tests {
         let collector = seize::Collector::new();
         let guard = collector.enter();
 
-        let entry = Shared::boxed(BinEntry::Node(new_node(1, 2, 3, &collector)), &collector);
+        let entry = Shared::boxed(BinEntry::Node(new_node(1, 2, 3, &collector)));
         let mut tab = Table::from(vec![Atomic::from(entry)], &collector);
         assert_eq!(
             // safety: we have not yet dropped entry
@@ -1520,10 +1490,8 @@ mod tests {
         let node2 = new_node(4, 5, 6, &collector);
         let entry2 = BinEntry::Node(node2);
         let node1 = new_node(1, 2, 3, &collector);
-        node1
-            .next
-            .store(Shared::boxed(entry2, &collector), Ordering::SeqCst);
-        let entry1 = Shared::boxed(BinEntry::Node(node1), &collector);
+        node1.next.store(Shared::boxed(entry2), Ordering::SeqCst);
+        let entry1 = Shared::boxed(BinEntry::Node(node1));
         let mut tab = Table::from(vec![Atomic::from(entry1)], &collector);
         assert_eq!(
             // safety: we have not yet dropped entry1
@@ -1542,7 +1510,7 @@ mod tests {
         let guard = collector.enter();
 
         let mut table = Table::<usize, usize>::new(1, &collector);
-        let table2 = Shared::boxed(Table::new(1, &collector), &collector);
+        let table2 = Shared::boxed(Table::new(1, &collector));
 
         let entry = table.get_moved(table2, &guard);
         table.store_bin(0, entry);
@@ -1552,7 +1520,6 @@ mod tests {
         table.drop_bins();
         // safety: table2 is still valid and not accessed by different threads
         unsafe { &mut *table2.as_ptr() }.drop_bins();
-        unsafe { guard.retire_shared(table2) };
     }
 
     #[test]
@@ -1561,7 +1528,7 @@ mod tests {
         let guard = collector.enter();
 
         let mut table = Table::<usize, usize>::new(1, &collector);
-        let table2 = Shared::boxed(Table::new(0, &collector), &collector);
+        let table2 = Shared::boxed(Table::new(0, &collector));
         let entry = table.get_moved(table2, &guard);
         table.store_bin(0, entry);
         assert!(table
@@ -1570,7 +1537,6 @@ mod tests {
         table.drop_bins();
         // safety: table2 is still valid and not accessed by different threads
         unsafe { &mut *table2.as_ptr() }.drop_bins();
-        unsafe { guard.retire_shared(table2) };
     }
 
     #[test]
@@ -1579,10 +1545,10 @@ mod tests {
         let guard = collector.enter();
 
         let mut table = Table::<usize, usize>::new(1, &collector);
-        let table2 = Shared::boxed(Table::new(2, &collector), &collector);
+        let table2 = Shared::boxed(Table::new(2, &collector));
         unsafe { table2.deref() }.store_bin(
             0,
-            Shared::boxed(BinEntry::Node(new_node(1, 2, 3, &collector)), &collector),
+            Shared::boxed(BinEntry::Node(new_node(1, 2, 3, &collector))),
         );
         let entry = table.get_moved(table2, &guard);
         table.store_bin(0, entry);
@@ -1601,11 +1567,11 @@ mod tests {
         let guard = collector.enter();
 
         let mut table = Table::<usize, usize>::new(1, &collector);
-        let table2 = Shared::boxed(Table::new(1, &collector), &collector);
+        let table2 = Shared::boxed(Table::new(1, &collector));
         // safety: table2 is still valid
         unsafe { table2.deref() }.store_bin(
             0,
-            Shared::boxed(BinEntry::Node(new_node(1, 2, 3, &collector)), &collector),
+            Shared::boxed(BinEntry::Node(new_node(1, 2, 3, &collector))),
         );
         let entry = table.get_moved(table2, &guard);
         table.store_bin(0, entry);

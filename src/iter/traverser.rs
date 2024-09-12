@@ -1,12 +1,13 @@
 use crate::node::{BinEntry, Node, TreeNode};
 use crate::raw::Table;
 use crate::reclaim::{Guard, Linked, Shared};
+use std::gc::Gc;
 use std::sync::atomic::Ordering;
 
 #[derive(Debug)]
 pub(crate) struct NodeIter<'g, K, V> {
     /// Current table; update if resized
-    table: Option<&'g Linked<Table<K, V>>>,
+    table: Option<&'g Gc<Table<K, V>>>,
 
     stack: Option<Box<TableStack<'g, K, V>>>,
     spare: Option<Box<TableStack<'g, K, V>>>,
@@ -53,7 +54,7 @@ impl<'g, K, V> NodeIter<'g, K, V> {
         }
     }
 
-    fn push_state(&mut self, t: &'g Linked<Table<K, V>>, i: usize, n: usize) {
+    fn push_state(&mut self, t: &'g Gc<Table<K, V>>, i: usize, n: usize) {
         let mut s = self.spare.take();
         if let Some(ref mut s) = s {
             self.spare = s.next.take();
@@ -114,7 +115,7 @@ impl<'g, K, V> Iterator for NodeIter<'g, K, V> {
     fn next(&mut self) -> Option<Self::Item> {
         let mut e = None;
         if let Some(prev) = self.prev {
-            let next = prev.next.load(Ordering::SeqCst, self.guard);
+            let next = prev.next.load(Ordering::SeqCst);
             if !next.is_null() {
                 // we have to check if we are iterating over a regular bin or a
                 // TreeBin. the Java code gets away without this due to
@@ -180,9 +181,7 @@ impl<'g, K, V> Iterator for NodeIter<'g, K, V> {
                             // at least as long as we hold onto the guard.
                             // Structurally, TreeNodes always point to TreeNodes, so this is sound.
                             &unsafe {
-                                TreeNode::get_tree_node(
-                                    tree_bin.first.load(Ordering::SeqCst, self.guard),
-                                )
+                                TreeNode::get_tree_node(tree_bin.first.load(Ordering::SeqCst))
                             }
                             .node,
                         );
@@ -210,7 +209,7 @@ impl<'g, K, V> Iterator for NodeIter<'g, K, V> {
 struct TableStack<'g, K, V> {
     length: usize,
     index: usize,
-    table: &'g Linked<Table<K, V>>,
+    table: &'g Gc<Table<K, V>>,
     next: Option<Box<TableStack<'g, K, V>>>,
 }
 
@@ -232,7 +231,7 @@ mod tests {
     fn iter_empty() {
         let collector = seize::Collector::new();
 
-        let table = Shared::boxed(Table::<usize, usize>::new(16, &collector), &collector);
+        let table = Shared::boxed(Table::<usize, usize>::new(16, &collector));
         let guard = collector.enter();
         let iter = NodeIter::new(table, &guard);
         assert_eq!(iter.count(), 0);
@@ -246,18 +245,15 @@ mod tests {
     fn iter_simple() {
         let collector = seize::Collector::new();
         let mut bins = vec![Atomic::null(); 16];
-        bins[8] = Atomic::from(Shared::boxed(
-            BinEntry::Node(Node {
-                hash: 0,
-                key: 0usize,
-                value: Atomic::from(Shared::boxed(0usize, &collector)),
-                next: Atomic::null(),
-                lock: Mutex::new(()),
-            }),
-            &collector,
-        ));
+        bins[8] = Atomic::from(Shared::boxed(BinEntry::Node(Node {
+            hash: 0,
+            key: 0usize,
+            value: Atomic::from(Shared::boxed(0usize)),
+            next: Atomic::null(),
+            lock: Mutex::new(()),
+        })));
 
-        let table = Shared::boxed(Table::from(bins, &collector), &collector);
+        let table = Shared::boxed(Table::from(bins, &collector));
         let guard = collector.enter();
         {
             let mut iter = NodeIter::new(table, &guard);
@@ -276,19 +272,16 @@ mod tests {
         // construct the forwarded-to table
         let collector = seize::Collector::new();
         let mut deep_bins = vec![Atomic::null(); 16];
-        deep_bins[8] = Atomic::from(Shared::boxed(
-            BinEntry::Node(Node {
-                hash: 0,
-                key: 0usize,
-                value: Atomic::from(Shared::boxed(0usize, &collector)),
-                next: Atomic::null(),
-                lock: Mutex::new(()),
-            }),
-            &collector,
-        ));
+        deep_bins[8] = Atomic::from(Shared::boxed(BinEntry::Node(Node {
+            hash: 0,
+            key: 0usize,
+            value: Atomic::from(Shared::boxed(0usize)),
+            next: Atomic::null(),
+            lock: Mutex::new(()),
+        })));
 
         let guard = collector.enter();
-        let deep_table = Shared::boxed(Table::from(deep_bins, &collector), &collector);
+        let deep_table = Shared::boxed(Table::from(deep_bins, &collector));
 
         // construct the forwarded-from table
         let mut bins = vec![Shared::null(); 16];
@@ -302,7 +295,7 @@ mod tests {
         for i in 0..bins.len() {
             table.store_bin(i, bins[i]);
         }
-        let table = Shared::boxed(table, &collector);
+        let table = Shared::boxed(table);
         {
             let mut iter = NodeIter::new(table, &guard);
             let e = iter.next().unwrap();

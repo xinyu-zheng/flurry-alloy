@@ -3,10 +3,11 @@ use seize::Linked;
 use crate::iter::*;
 use crate::node::*;
 use crate::raw::*;
-use crate::reclaim::{Atomic, Collector, Guard, RetireShared, Shared};
+use crate::reclaim::{Atomic, Collector, Guard, Shared};
 use std::borrow::Borrow;
 use std::error::Error;
 use std::fmt::{self, Debug, Display, Formatter};
+use std::gc::Gc;
 use std::hash::{BuildHasher, Hash};
 use std::sync::atomic::{AtomicIsize, Ordering};
 
@@ -144,7 +145,7 @@ enum PutResult<'a, T> {
     },
     Exists {
         current: &'a T,
-        not_inserted: Box<Linked<T>>,
+        not_inserted: Box<Gc<T>>,
     },
 }
 
@@ -388,7 +389,7 @@ impl<K, V, S> HashMap<K, V, S> {
     /// Returns the capacity of the map.
     fn capacity(&self, guard: &Guard<'_>) -> usize {
         self.check_guard(guard);
-        let table = self.table.load(Ordering::Relaxed, guard);
+        let table = self.table.load(Ordering::Relaxed);
 
         if table.is_null() {
             0
@@ -410,7 +411,7 @@ impl<K, V, S> HashMap<K, V, S> {
     /// The iterator element type is `(&'g K, &'g V)`.
     pub fn iter<'g>(&'g self, guard: &'g Guard<'_>) -> Iter<'g, K, V> {
         self.check_guard(guard);
-        let table = self.table.load(Ordering::SeqCst, guard);
+        let table = self.table.load(Ordering::SeqCst);
         let node_iter = NodeIter::new(table, guard);
         Iter { node_iter, guard }
     }
@@ -420,7 +421,7 @@ impl<K, V, S> HashMap<K, V, S> {
     /// The iterator element type is `&'g K`.
     pub fn keys<'g>(&'g self, guard: &'g Guard<'_>) -> Keys<'g, K, V> {
         self.check_guard(guard);
-        let table = self.table.load(Ordering::SeqCst, guard);
+        let table = self.table.load(Ordering::SeqCst);
         let node_iter = NodeIter::new(table, guard);
         Keys { node_iter }
     }
@@ -430,14 +431,14 @@ impl<K, V, S> HashMap<K, V, S> {
     /// The iterator element type is `&'g V`.
     pub fn values<'g>(&'g self, guard: &'g Guard<'_>) -> Values<'g, K, V> {
         self.check_guard(guard);
-        let table = self.table.load(Ordering::SeqCst, guard);
+        let table = self.table.load(Ordering::SeqCst);
         let node_iter = NodeIter::new(table, guard);
         Values { node_iter, guard }
     }
 
     fn init_table<'g>(&'g self, guard: &'g Guard<'_>) -> Shared<'g, Table<K, V>> {
         loop {
-            let table = self.table.load(Ordering::SeqCst, guard);
+            let table = self.table.load(Ordering::SeqCst);
             // safety: we loaded the table while the thread was marked as active.
             // table won't be deallocated until the guard is dropped at the earliest.
             if !table.is_null() && !unsafe { table.deref() }.is_empty() {
@@ -457,7 +458,7 @@ impl<K, V, S> HashMap<K, V, S> {
                 .is_ok()
             {
                 // we get to do it!
-                let mut table = self.table.load(Ordering::SeqCst, guard);
+                let mut table = self.table.load(Ordering::SeqCst);
 
                 // safety: we loaded the table while the thread was marked as active.
                 // table won't be deallocated until the guard is dropped at the earliest.
@@ -467,7 +468,7 @@ impl<K, V, S> HashMap<K, V, S> {
                     } else {
                         DEFAULT_CAPACITY
                     };
-                    table = Shared::boxed(Table::new(n, &self.collector), &self.collector);
+                    table = Shared::boxed(Table::new(n, &self.collector));
                     self.table.store(table, Ordering::SeqCst);
                     sc = load_factor!(n as isize)
                 }
@@ -499,16 +500,13 @@ impl<K, V, S> HashMap<K, V, S> {
 
         // sanity check that the map has indeed not been set up already
         assert_eq!(self.size_ctl.load(Ordering::SeqCst), 0);
-        assert!(self.table.load(Ordering::SeqCst, &guard).is_null());
+        assert!(self.table.load(Ordering::SeqCst).is_null());
 
         // the table has not yet been initialized, so we can just create it
         // with as many bins as were requested
 
         // create a table with `new_capacity` empty bins
-        let new_table = Shared::boxed(
-            Table::new(requested_capacity, &self.collector),
-            &self.collector,
-        );
+        let new_table = Shared::boxed(Table::new(requested_capacity, &self.collector));
 
         // store the new table to `self.table`
         self.table.store(new_table, Ordering::SeqCst);
@@ -552,7 +550,7 @@ where
                 break;
             }
 
-            let table = self.table.load(Ordering::SeqCst, guard);
+            let table = self.table.load(Ordering::SeqCst);
 
             // The current capacity == the number of bins in the current table
             let current_capactity = if table.is_null() {
@@ -583,7 +581,7 @@ where
 
                 // we got the initialization `lock`; Make sure the table is still unitialized
                 // (or is the same table with 0 bins we read earlier, althought that should not be the case)
-                if self.table.load(Ordering::SeqCst, guard) != table {
+                if self.table.load(Ordering::SeqCst) != table {
                     // NOTE: this could probably be `!self.table.load(...).is_null()`
                     // if we decide that tables can never have 0 bins.
 
@@ -594,11 +592,10 @@ where
                 }
 
                 // create a table with `new_capacity` empty bins
-                let new_table =
-                    Shared::boxed(Table::new(new_capacity, &self.collector), &self.collector);
+                let new_table = Shared::boxed(Table::new(new_capacity, &self.collector));
 
                 // store the new table to `self.table`
-                let old_table = self.table.swap(new_table, Ordering::SeqCst, guard);
+                let old_table = self.table.swap(new_table, Ordering::SeqCst);
 
                 // old_table should be `null`, since we don't ever initialize a table with 0 bins
                 // and this branch only happens if table has not yet been initialized or it's length is 0.
@@ -623,7 +620,7 @@ where
                 // Or it was larger than the `MAXIMUM_CAPACITY` of the map and we refuse
                 // to resize to an invalid capacity
                 break;
-            } else if table == self.table.load(Ordering::SeqCst, guard) {
+            } else if table == self.table.load(Ordering::SeqCst) {
                 // The table is initialized, try to resize it to the requested capacity
 
                 let rs: isize = Self::resize_stamp(current_capactity) << RESIZE_STAMP_SHIFT;
@@ -666,11 +663,11 @@ where
 
         if next_table_ptr.is_null() {
             // we are initiating a resize
-            let table = Shared::boxed(Table::new(n << 1, &self.collector), &self.collector);
-            let now_garbage = self.next_table.swap(table, Ordering::SeqCst, guard);
+            let table = Shared::boxed(Table::new(n << 1, &self.collector));
+            let now_garbage = self.next_table.swap(table, Ordering::SeqCst);
             assert!(now_garbage.is_null());
             self.transfer_index.store(n as isize, Ordering::SeqCst);
-            next_table_ptr = self.next_table.load(Ordering::Relaxed, guard);
+            next_table_ptr = self.next_table.load(Ordering::Relaxed);
         }
 
         // safety: same argument as for table above
@@ -719,7 +716,7 @@ where
                 if finishing {
                     // this branch is only taken for one thread partaking in the resize!
                     self.next_table.store(Shared::null(), Ordering::SeqCst);
-                    let now_garbage = self.table.swap(next_table_ptr, Ordering::SeqCst, guard);
+                    let now_garbage = self.table.swap(next_table_ptr, Ordering::SeqCst);
                     // safety: need to guarantee that now_garbage is no longer reachable. more
                     // specifically, no thread that executes _after_ this line can ever get a
                     // reference to now_garbage.
@@ -745,7 +742,6 @@ where
                     // because of this, that thread must have been marked as active, and included
                     // in the reference count, meaning the garbage will not be freed until
                     // that thread drops its guard at the earliest.
-                    unsafe { guard.retire_shared(now_garbage) };
                     self.size_ctl
                         .store(((n as isize) << 1) - ((n as isize) >> 1), Ordering::SeqCst);
                     return;
@@ -846,7 +842,7 @@ where
                         // must include us in the reference count. therefore, it can only be
                         // dropped _after_ we drop our guard, and is safe to use now.
                         let node = unsafe { p.deref() }.as_node().unwrap();
-                        let next = node.next.load(Ordering::SeqCst, guard);
+                        let next = node.next.load(Ordering::SeqCst);
 
                         let b = node.hash & n as u64;
                         if b != run_bit {
@@ -890,17 +886,14 @@ where
                             &mut high_bin
                         };
 
-                        *link = Shared::boxed(
-                            BinEntry::Node(Node::with_next(
-                                node.hash,
-                                node.key.clone(),
-                                node.value.clone(),
-                                Atomic::from(*link),
-                            )),
-                            &self.collector,
-                        );
+                        *link = Shared::boxed(BinEntry::Node(Node::with_next(
+                            node.hash,
+                            node.key.clone(),
+                            node.value.clone(),
+                            Atomic::from(*link),
+                        )));
 
-                        p = node.next.load(Ordering::SeqCst, guard);
+                        p = node.next.load(Ordering::SeqCst);
                     }
 
                     next_table.store_bin(i, low_bin);
@@ -924,8 +917,7 @@ where
                             .as_node()
                             .unwrap()
                             .next
-                            .load(Ordering::SeqCst, guard);
-                        unsafe { guard.retire_shared(p) };
+                            .load(Ordering::SeqCst);
                         p = next;
                     }
 
@@ -949,7 +941,7 @@ where
                     let mut high_tail = Shared::null();
                     let mut low_count = 0;
                     let mut high_count = 0;
-                    let mut e = tree_bin.first.load(Ordering::Relaxed, guard);
+                    let mut e = tree_bin.first.load(Ordering::Relaxed);
                     while !e.is_null() {
                         // safety: we read under our guard, at which point the tree
                         // structure was valid. Since our guard marks the current thread
@@ -968,8 +960,7 @@ where
                         let run_bit = hash & n as u64;
                         if run_bit == 0 {
                             new_node.prev.store(low_tail, Ordering::Relaxed);
-                            let new_node =
-                                Shared::boxed(BinEntry::TreeNode(new_node), &self.collector);
+                            let new_node = Shared::boxed(BinEntry::TreeNode(new_node));
                             if low_tail.is_null() {
                                 // this is the first element inserted into the low bin
                                 low = new_node;
@@ -985,8 +976,7 @@ where
                             low_count += 1;
                         } else {
                             new_node.prev.store(high_tail, Ordering::Relaxed);
-                            let new_node =
-                                Shared::boxed(BinEntry::TreeNode(new_node), &self.collector);
+                            let new_node = Shared::boxed(BinEntry::TreeNode(new_node));
                             if high_tail.is_null() {
                                 // this is the first element inserted into the high bin
                                 high = new_node;
@@ -1001,7 +991,7 @@ where
                             high_tail = new_node;
                             high_count += 1;
                         }
-                        e = tree_node.node.next.load(Ordering::Relaxed, guard);
+                        e = tree_node.node.next.load(Ordering::Relaxed);
                     }
 
                     let mut reused_bin = false;
@@ -1023,7 +1013,7 @@ where
                         // and have never shared them
                         let low_bin = unsafe { BinEntry::Tree(TreeBin::new(low, guard)) };
 
-                        Shared::boxed(low_bin, &self.collector)
+                        Shared::boxed(low_bin)
                     } else {
                         // if not, we can re-use the old bin here, since it will
                         // be swapped for a Moved entry while we are still
@@ -1047,7 +1037,7 @@ where
                         // and have never shared them
                         let high_bin = unsafe { BinEntry::Tree(TreeBin::new(high, guard)) };
 
-                        Shared::boxed(high_bin, &self.collector)
+                        Shared::boxed(high_bin)
                     } else {
                         reused_bin = true;
                         // since we also don't use the created low nodes here,
@@ -1107,8 +1097,8 @@ where
         // safety: same as above
         let rs = Self::resize_stamp(unsafe { table.deref() }.len()) << RESIZE_STAMP_SHIFT;
 
-        while next_table == self.next_table.load(Ordering::SeqCst, guard)
-            && table == self.table.load(Ordering::SeqCst, guard)
+        while next_table == self.next_table.load(Ordering::SeqCst)
+            && table == self.table.load(Ordering::SeqCst)
         {
             let sc = self.size_ctl.load(Ordering::SeqCst);
             if sc >= 0
@@ -1157,7 +1147,7 @@ where
                 break;
             }
 
-            let table = self.table.load(Ordering::SeqCst, guard);
+            let table = self.table.load(Ordering::SeqCst);
             if table.is_null() {
                 // table will be initalized by another thread anyway
                 break;
@@ -1180,7 +1170,7 @@ where
                 if sc == rs + MAX_RESIZERS || sc == rs + 1 {
                     break;
                 }
-                let nt = self.next_table.load(Ordering::SeqCst, guard);
+                let nt = self.next_table.load(Ordering::SeqCst);
                 if nt.is_null() {
                     break;
                 }
@@ -1258,7 +1248,7 @@ where
         K: Borrow<Q>,
         Q: ?Sized + Hash + Ord,
     {
-        let table = self.table.load(Ordering::SeqCst, guard);
+        let table = self.table.load(Ordering::SeqCst);
         if table.is_null() {
             return None;
         }
@@ -1370,7 +1360,7 @@ where
         self.check_guard(guard);
         let node = self.get_node(key, guard)?;
 
-        let v = node.value.load(Ordering::SeqCst, guard);
+        let v = node.value.load(Ordering::SeqCst);
         assert!(!v.is_null());
         // safety: the lifetime of the reference is bound to the guard
         // supplied which means that the memory will not be modified
@@ -1397,7 +1387,7 @@ where
         self.check_guard(guard);
         let node = self.get_node(key, guard)?;
 
-        let v = node.value.load(Ordering::SeqCst, guard);
+        let v = node.value.load(Ordering::SeqCst);
         assert!(!v.is_null());
         // safety: the lifetime of the reference is bound to the guard
         // supplied which means that the memory will not be modified
@@ -1450,7 +1440,7 @@ where
         let mut delta = 0;
         let mut idx = 0usize;
 
-        let mut table = self.table.load(Ordering::SeqCst, guard);
+        let mut table = self.table.load(Ordering::SeqCst);
         // Safety: self.table is a valid pointer because we checked it above.
         while !table.is_null() && idx < unsafe { table.deref() }.len() {
             let tab = unsafe { table.deref() };
@@ -1486,7 +1476,7 @@ where
                     drop(head_lock);
                     // next, walk the nodes of the bin and free the nodes and their values as we go
                     // note that we do not free the head node yet, since we're holding the lock it contains
-                    let mut p = node.next.load(Ordering::SeqCst, guard);
+                    let mut p = node.next.load(Ordering::SeqCst);
                     while !p.is_null() {
                         delta -= 1;
                         p = {
@@ -1494,8 +1484,8 @@ where
                             let node = unsafe { p.deref() }
                                 .as_node()
                                 .expect("entry following Node should always be a Node");
-                            let next = node.next.load(Ordering::SeqCst, guard);
-                            let value = node.value.load(Ordering::SeqCst, guard);
+                            let next = node.next.load(Ordering::SeqCst);
+                            let value = node.value.load(Ordering::SeqCst);
                             // NOTE: do not use the reference in `node` after this point!
 
                             // free the node's value
@@ -1503,19 +1493,15 @@ where
                             // into it above. it must also have already been marked as active. therefore, the
                             // defer_destroy below won't be executed until that thread's guard is dropped, at which
                             // point it holds no outstanding references to the value anyway.
-                            unsafe { guard.retire_shared(value) };
                             // free the bin entry itself
                             // safety: same argument as for value above.
-                            unsafe { guard.retire_shared(p) };
                             next
                         };
                     }
                     // finally, we can drop the head node and its value
-                    let value = node.value.load(Ordering::SeqCst, guard);
+                    let value = node.value.load(Ordering::SeqCst);
                     // NOTE: do not use the reference in `node` after this point!
                     // safety: same as the argument for being allowed to free the nodes beyond the head above
-                    unsafe { guard.retire_shared(value) };
-                    unsafe { guard.retire_shared(raw_node) };
                     delta -= 1;
                     idx += 1;
                 }
@@ -1537,7 +1523,7 @@ where
                     tab.store_bin(idx, Shared::null());
                     drop(bin_lock);
                     // next, walk the nodes of the bin and count how many values we remove
-                    let mut p = tree_bin.first.load(Ordering::SeqCst, guard);
+                    let mut p = tree_bin.first.load(Ordering::SeqCst);
                     while !p.is_null() {
                         delta -= 1;
                         p = {
@@ -1551,11 +1537,10 @@ where
                             // values here, since they will be dropped together
                             // with the containing TreeBin (`tree_bin`) in its
                             // `drop`
-                            tree_node.node.next.load(Ordering::SeqCst, guard)
+                            tree_node.node.next.load(Ordering::SeqCst)
                         };
                     }
                     // safety: same as in the BinEntry::Node case above
-                    unsafe { guard.retire_shared(raw_node) };
                     idx += 1;
                 }
                 BinEntry::TreeNode(_) => unreachable!(
@@ -1653,6 +1638,7 @@ where
                 not_inserted,
             } => Err(TryInsertError {
                 current,
+                // FIXME: unwrap to get the V
                 not_inserted: not_inserted.value,
             }),
             PutResult::Inserted { new } => Ok(new),
@@ -1670,9 +1656,9 @@ where
         guard: &'g Guard<'_>,
     ) -> PutResult<'g, V> {
         let hash = self.hash(&key);
-        let mut table = self.table.load(Ordering::SeqCst, guard);
+        let mut table = self.table.load(Ordering::SeqCst);
         let mut bin_count;
-        let value = Shared::boxed(value, &self.collector);
+        let value = Shared::boxed(value);
         let mut old_val = None;
         loop {
             // safety: see argument below for !is_null case
@@ -1703,8 +1689,7 @@ where
             let mut bin = t.bin(bini, guard);
             if bin.is_null() {
                 // fast path -- bin is empty so stick us at the front
-                let node =
-                    Shared::boxed(BinEntry::Node(Node::new(hash, key, value)), &self.collector);
+                let node = Shared::boxed(BinEntry::Node(Node::new(hash, key, value)));
                 match t.cas_bin(bini, bin, node, guard) {
                     Ok(_old_null_ptr) => {
                         self.add_count(1, Some(0), guard);
@@ -1720,6 +1705,7 @@ where
                     Err(changed) => {
                         assert!(!changed.current.is_null());
                         bin = changed.current;
+                        // FIXME: ** to get the value
                         if let BinEntry::Node(node) = unsafe { changed.new.into_box() }.value {
                             key = node.key;
                         } else {
@@ -1756,7 +1742,7 @@ where
                     if no_replacement && head.hash == hash && head.key == key =>
                 {
                     // fast path if replacement is disallowed and first bin matches
-                    let v = head.value.load(Ordering::SeqCst, guard);
+                    let v = head.value.load(Ordering::SeqCst);
                     // safety (for v): since the value is present now, and we've held a guard from
                     // the beginning of the search, the value cannot be dropped after we drop our guard.
                     // safety (for value): since we never inserted the value in the tree, `value`
@@ -1792,7 +1778,7 @@ where
                         let n = unsafe { p.deref() }.as_node().unwrap();
                         if n.hash == hash && n.key == key {
                             // the key already exists in the map!
-                            let current_value = n.value.load(Ordering::SeqCst, guard);
+                            let current_value = n.value.load(Ordering::SeqCst);
 
                             // safety: since the value is present now, and we've held a guard from
                             // the beginning of the search, the value cannot be dropped until after
@@ -1810,7 +1796,7 @@ where
                                 };
                             } else {
                                 // update the value in the existing node
-                                let now_garbage = n.value.swap(value, Ordering::SeqCst, guard);
+                                let now_garbage = n.value.swap(value, Ordering::SeqCst);
                                 // NOTE: now_garbage == current_value
 
                                 // safety: need to guarantee that now_garbage is no longer
@@ -1832,19 +1818,15 @@ where
                                 //    no other ways to get to a value except through its Node's
                                 //    `value` field (which is what we swapped), so freeing
                                 //    now_garbage is fine.
-                                unsafe { guard.retire_shared(now_garbage) };
                             }
                             break Some(current_value);
                         }
 
                         // TODO: This Ordering can probably be relaxed due to the Mutex
-                        let next = n.next.load(Ordering::SeqCst, guard);
+                        let next = n.next.load(Ordering::SeqCst);
                         if next.is_null() {
                             // we're at the end of the bin -- stick the node here!
-                            let node = Shared::boxed(
-                                BinEntry::Node(Node::new(hash, key, value)),
-                                &self.collector,
-                            );
+                            let node = Shared::boxed(BinEntry::Node(Node::new(hash, key, value)));
                             n.next.store(node, Ordering::SeqCst);
                             break None;
                         }
@@ -1887,7 +1869,7 @@ where
                     // Structurally, TreeNodes always point to TreeNodes, so this is sound.
                     let tree_node = unsafe { TreeNode::get_tree_node(p) };
                     old_val = {
-                        let current_value = tree_node.node.value.load(Ordering::SeqCst, guard);
+                        let current_value = tree_node.node.value.load(Ordering::SeqCst);
                         // safety: since the value is present now, and we've held a guard from
                         // the beginning of the search, the value cannot be dropped until after
                         // we drop our guard.
@@ -1902,8 +1884,7 @@ where
                                 not_inserted: unsafe { value.into_box() },
                             };
                         } else {
-                            let now_garbage =
-                                tree_node.node.value.swap(value, Ordering::SeqCst, guard);
+                            let now_garbage = tree_node.node.value.swap(value, Ordering::SeqCst);
                             // NOTE: now_garbage == current_value
 
                             // safety: need to guarantee that now_garbage is no longer
@@ -1925,7 +1906,6 @@ where
                             //    no other ways to get to a value except through its Node's
                             //    `value` field (which is what we swapped), so freeing
                             //    now_garbage is fine.
-                            unsafe { guard.retire_shared(now_garbage) };
                         }
                         Some(current_value)
                     };
@@ -2010,7 +1990,7 @@ where
         self.check_guard(guard);
         let hash = self.hash(&key);
 
-        let mut table = self.table.load(Ordering::SeqCst, guard);
+        let mut table = self.table.load(Ordering::SeqCst);
         let mut new_val = None;
         let mut removed_node = false;
         let mut bin_count;
@@ -2094,10 +2074,10 @@ where
                         // until at least after we drop our guard.
                         let n = unsafe { p.deref() }.as_node().unwrap();
                         // TODO: This Ordering can probably be relaxed due to the Mutex
-                        let next = n.next.load(Ordering::SeqCst, guard);
+                        let next = n.next.load(Ordering::SeqCst);
                         if n.hash == hash && n.key.borrow() == key {
                             // the key already exists in the map!
-                            let current_value = n.value.load(Ordering::SeqCst, guard);
+                            let current_value = n.value.load(Ordering::SeqCst);
 
                             // safety: since the value is present now, and we've held a guard from
                             // the beginning of the search, the value cannot be dropped until after
@@ -2106,8 +2086,8 @@ where
                                 remapping_function(&n.key, unsafe { current_value.deref() });
 
                             if let Some(value) = new_value {
-                                let value = Shared::boxed(value, &self.collector);
-                                let now_garbage = n.value.swap(value, Ordering::SeqCst, guard);
+                                let value = Shared::boxed(value);
+                                let now_garbage = n.value.swap(value, Ordering::SeqCst);
                                 // NOTE: now_garbage == current_value
 
                                 // safety: need to guarantee that now_garbage is no longer
@@ -2129,7 +2109,6 @@ where
                                 //    no other ways to get to a value except through its Node's
                                 //    `value` field (which is what we swapped), so freeing
                                 //    now_garbage is fine.
-                                unsafe { guard.retire_shared(now_garbage) };
 
                                 // safety: since the value is present now, and we've held a guard from
                                 // the beginning of the search, the value cannot be dropped until after
@@ -2171,8 +2150,6 @@ where
                                 //    no other ways to get to a value except through its Node's
                                 //    `value` field (which is what we swapped), so freeing
                                 //    now_garbage is fine.
-                                unsafe { guard.retire_shared(p) };
-                                unsafe { guard.retire_shared(current_value) };
                                 break None;
                             }
                         }
@@ -2202,7 +2179,7 @@ where
                     // yes, it is still the head, so we can now "own" the bin
                     // note that there can still be readers in the bin!
                     bin_count = 2;
-                    let root = tree_bin.root.load(Ordering::SeqCst, guard);
+                    let root = tree_bin.root.load(Ordering::SeqCst);
                     if root.is_null() {
                         // TODO: Is this even reachable?
                         // The Java code has `NULL` checks for this, but in theory it should not be possible to
@@ -2224,7 +2201,7 @@ where
                             // guard.
                             // Structurally, TreeNodes always point to TreeNodes, so this is sound.
                             let n = &unsafe { TreeNode::get_tree_node(p) }.node;
-                            let current_value = n.value.load(Ordering::SeqCst, guard);
+                            let current_value = n.value.load(Ordering::SeqCst);
 
                             // safety: since the value is present now, and we've held a guard from
                             // the beginning of the search, the value cannot be dropped until after
@@ -2233,8 +2210,8 @@ where
                                 remapping_function(&n.key, unsafe { current_value.deref() });
 
                             if let Some(value) = new_value {
-                                let value = Shared::boxed(value, &self.collector);
-                                let now_garbage = n.value.swap(value, Ordering::SeqCst, guard);
+                                let value = Shared::boxed(value);
+                                let now_garbage = n.value.swap(value, Ordering::SeqCst);
                                 // NOTE: now_garbage == current_value
 
                                 // safety: need to guarantee that now_garbage is no longer
@@ -2256,7 +2233,7 @@ where
                                 //    no other ways to get to a value except through its Node's
                                 //    `value` field (which is what we swapped), so freeing
                                 //    now_garbage is fine.
-                                unsafe { guard.retire_shared(now_garbage) };
+
                                 // safety: since the value is present now, and we've held a guard from
                                 // the beginning of the search, the value cannot be dropped until after
                                 // we drop our guard.
@@ -2273,10 +2250,8 @@ where
                                     tree_bin.remove_tree_node(p, true, guard, &self.collector)
                                 };
                                 if need_to_untreeify {
-                                    let linear_bin = self.untreeify(
-                                        tree_bin.first.load(Ordering::SeqCst, guard),
-                                        guard,
-                                    );
+                                    let linear_bin = self
+                                        .untreeify(tree_bin.first.load(Ordering::SeqCst), guard);
                                     t.store_bin(bini, linear_bin);
                                     // the old bin is now garbage, but its values are not,
                                     // since they are re-used in the linear bin.
@@ -2292,8 +2267,6 @@ where
                                     // be untreeified.
                                     unsafe {
                                         TreeBin::defer_drop_without_values(bin, guard);
-                                        guard.retire_shared(p);
-                                        guard.retire_shared(current_value);
                                     }
                                 }
                                 None
@@ -2414,7 +2387,7 @@ where
 
         let is_remove = new_value.is_none();
         let mut old_val = None;
-        let mut table = self.table.load(Ordering::SeqCst, guard);
+        let mut table = self.table.load(Ordering::SeqCst);
         loop {
             if table.is_null() {
                 break;
@@ -2484,9 +2457,9 @@ where
                         // Thus, e cannot be dropped until we release our guard, so e is also valid
                         // if it was obtained from a next pointer.
                         let n = unsafe { e.deref() }.as_node().unwrap();
-                        let next = n.next.load(Ordering::SeqCst, guard);
+                        let next = n.next.load(Ordering::SeqCst);
                         if n.hash == hash && n.key.borrow() == key {
-                            let ev = n.value.load(Ordering::SeqCst, guard);
+                            let ev = n.value.load(Ordering::SeqCst);
 
                             // only replace the node if the value is the one we expected at method call
                             if observed_value.map(|ov| ov == ev).unwrap_or(true) {
@@ -2495,10 +2468,7 @@ where
 
                                 // found the node but we have a new value to replace the old one
                                 if let Some(nv) = new_value {
-                                    n.value.store(
-                                        Shared::boxed(nv, &self.collector),
-                                        Ordering::SeqCst,
-                                    );
+                                    n.value.store(Shared::boxed(nv), Ordering::SeqCst);
                                     // we are just replacing entry value and we do not want to remove the node
                                     // so we stop iterating here
                                     break;
@@ -2519,7 +2489,6 @@ where
 
                                 // in either case, mark the BinEntry as garbage, since it was just removed
                                 // safety: as for val below / in put
-                                unsafe { guard.retire_shared(e) };
                             }
                             // since the key was found and only one node exists per key, we can break here
                             break;
@@ -2541,7 +2510,7 @@ where
                         continue;
                     }
 
-                    let root = tree_bin.root.load(Ordering::SeqCst, guard);
+                    let root = tree_bin.root.load(Ordering::SeqCst);
                     if root.is_null() {
                         // we are in the correct bin for the given key's hash and the bin is not
                         // `Moved`, but it is empty. This means there is no node for the given
@@ -2565,7 +2534,7 @@ where
                     // guard.
                     // Structurally, TreeNodes always point to TreeNodes, so this is sound.
                     let n = &unsafe { TreeNode::get_tree_node(p) }.node;
-                    let pv = n.value.load(Ordering::SeqCst, guard);
+                    let pv = n.value.load(Ordering::SeqCst);
 
                     // only replace the node if the value is the one we expected at method call
                     if observed_value.map(|ov| ov == pv).unwrap_or(true) {
@@ -2574,8 +2543,7 @@ where
 
                         if let Some(nv) = new_value {
                             // found the node but we have a new value to replace the old one
-                            n.value
-                                .store(Shared::boxed(nv, &self.collector), Ordering::SeqCst);
+                            n.value.store(Shared::boxed(nv), Ordering::SeqCst);
                         } else {
                             // drop `p` without its value, since the old value is dropped
                             // in the check on `old_val` below
@@ -2588,15 +2556,14 @@ where
                                 tree_bin.remove_tree_node(p, false, guard, &self.collector)
                             };
                             if need_to_untreeify {
-                                let linear_bin = self
-                                    .untreeify(tree_bin.first.load(Ordering::SeqCst, guard), guard);
+                                let linear_bin =
+                                    self.untreeify(tree_bin.first.load(Ordering::SeqCst), guard);
                                 t.store_bin(bini, linear_bin);
                                 // the old bin is now garbage, but its values are not,
                                 // since they get re-used in the linear bin
                                 // safety: same as in put
                                 unsafe {
                                     TreeBin::defer_drop_without_values(bin, guard);
-                                    guard.retire_shared(p);
                                 }
                             }
                         }
@@ -2632,7 +2599,6 @@ where
                 //    no other ways to get to a value except through its Node's
                 //    `value` field (which is what we swapped), so freeing
                 //    now_garbage is fine.
-                unsafe { guard.retire_shared(val) };
 
                 // safety: the lifetime of the reference is bound to the guard
                 // supplied which means that the memory will not be freed
@@ -2764,8 +2730,7 @@ where
                             Atomic::null(),
                         );
                         new_tree_node.prev.store(tail, Ordering::Relaxed);
-                        let new_tree_node =
-                            Shared::boxed(BinEntry::TreeNode(new_tree_node), &self.collector);
+                        let new_tree_node = Shared::boxed(BinEntry::TreeNode(new_tree_node));
                         if tail.is_null() {
                             // this was the first TreeNode, so it becomes the head
                             head = new_tree_node;
@@ -2780,13 +2745,13 @@ where
                                 .store(new_tree_node, Ordering::Relaxed);
                         }
                         tail = new_tree_node;
-                        e = e_deref.next.load(Ordering::SeqCst, guard);
+                        e = e_deref.next.load(Ordering::SeqCst);
                     }
 
                     // safety: we have just created `head` and its `next` nodes using `Shared::boxed`
                     // and have never shared them
                     let head_bin = unsafe { BinEntry::Tree(TreeBin::new(head, guard)) };
-                    tab.store_bin(index, Shared::boxed(head_bin, &self.collector));
+                    tab.store_bin(index, Shared::boxed(head_bin));
                     drop(lock);
                     // make sure the old bin entries get dropped
                     e = bin;
@@ -2801,13 +2766,7 @@ where
                         //
                         // NOTE: we do not drop the value, since it gets moved to the new TreeNode
                         unsafe {
-                            guard.retire_shared(e);
-                            e = e
-                                .deref()
-                                .as_node()
-                                .unwrap()
-                                .next
-                                .load(Ordering::SeqCst, guard);
+                            e = e.deref().as_node().unwrap().next.load(Ordering::SeqCst);
                         }
                     }
                 }
@@ -2877,14 +2836,11 @@ where
             let q_deref = unsafe { q.deref() }.as_tree_node().unwrap();
             // NOTE: cloning the value uses a load with Ordering::Relaxed, but
             // write access is synchronized through the bin lock
-            let new_node = Shared::boxed(
-                BinEntry::Node(Node::new(
-                    q_deref.node.hash,
-                    q_deref.node.key.clone(),
-                    q_deref.node.value.clone(),
-                )),
-                &self.collector,
-            );
+            let new_node = Shared::boxed(BinEntry::Node(Node::new(
+                q_deref.node.hash,
+                q_deref.node.key.clone(),
+                q_deref.node.value.clone(),
+            )));
             if tail.is_null() {
                 head = new_node;
             } else {
@@ -2897,7 +2853,7 @@ where
                     .store(new_node, Ordering::Relaxed);
             }
             tail = new_node;
-            q = q_deref.node.next.load(Ordering::Relaxed, guard);
+            q = q_deref.node.next.load(Ordering::Relaxed);
         }
 
         head
@@ -2947,8 +2903,8 @@ impl<K, V, S> Drop for HashMap<K, V, S> {
         // here rather than an unprotected one.
         let guard = unsafe { Guard::unprotected() };
 
-        assert!(self.next_table.load(Ordering::SeqCst, &guard).is_null());
-        let table = self.table.swap(Shared::null(), Ordering::SeqCst, &guard);
+        assert!(self.next_table.load(Ordering::SeqCst).is_null());
+        let table = self.table.swap(Shared::null(), Ordering::SeqCst);
         if table.is_null() {
             // table was never allocated!
             return;
@@ -3391,7 +3347,7 @@ mod tree_bins {
                 map.insert(i, i, guard);
             }
             // Ensure the bin was correctly treeified
-            let t = map.table.load(Ordering::Relaxed, guard);
+            let t = map.table.load(Ordering::Relaxed);
             let t = unsafe { t.deref() };
             let bini = t.bini(0);
             let bin = t.bin(bini, guard);
@@ -3488,7 +3444,7 @@ mod tree_bins {
                 map.insert(i, i, guard);
             }
             // Ensure the bin was correctly treeified
-            let t = map.table.load(Ordering::Relaxed, guard);
+            let t = map.table.load(Ordering::Relaxed);
             let t = unsafe { t.deref() };
             let bini = t.bini(0);
             let bin = t.bin(bini, guard);
@@ -3510,7 +3466,7 @@ mod tree_bins {
         {
             // Ensure the bin was correctly untreeified
             let guard = &map.guard();
-            let t = map.table.load(Ordering::Relaxed, guard);
+            let t = map.table.load(Ordering::Relaxed);
             let t = unsafe { t.deref() };
             let bini = t.bini(0);
             let bin = t.bin(bini, guard);

@@ -1,5 +1,5 @@
 use crate::iter::*;
-use crate::reclaim::{Guard, GuardRef};
+use crate::reclaim::Guard;
 use crate::{HashMap, TryInsertError};
 use std::borrow::Borrow;
 use std::fmt::{self, Debug, Formatter};

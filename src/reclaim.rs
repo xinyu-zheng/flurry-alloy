@@ -1,35 +1,31 @@
 pub(crate) use seize::{Collector, Guard, Linked};
 
+use std::gc::Gc;
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::{fmt, ptr};
 
-pub(crate) struct Atomic<T>(AtomicPtr<Linked<T>>);
+pub(crate) struct Atomic<T>(AtomicPtr<Gc<T>>);
 
 impl<T> Atomic<T> {
     pub(crate) fn null() -> Self {
         Self(AtomicPtr::default())
     }
 
-    pub(crate) fn load<'g>(&self, ordering: Ordering, guard: &'g Guard<'_>) -> Shared<'g, T> {
-        guard.protect(&self.0, ordering).into()
+    pub(crate) fn load<'g>(&self, ordering: Ordering) -> Shared<'g, T> {
+        self.0.load(ordering).into()
     }
 
     pub(crate) fn store(&self, new: Shared<'_, T>, ordering: Ordering) {
         self.0.store(new.ptr, ordering);
     }
 
-    pub(crate) unsafe fn into_box(self) -> Box<Linked<T>> {
+    pub(crate) unsafe fn into_box(self) -> Box<Gc<T>> {
         Box::from_raw(self.0.into_inner())
     }
 
-    pub(crate) fn swap<'g>(
-        &self,
-        new: Shared<'_, T>,
-        ord: Ordering,
-        _: &'g Guard<'_>,
-    ) -> Shared<'g, T> {
+    pub(crate) fn swap<'g>(&self, new: Shared<'_, T>, ord: Ordering) -> Shared<'g, T> {
         self.0.swap(new.ptr, ord).into()
     }
 
@@ -39,7 +35,6 @@ impl<T> Atomic<T> {
         new: Shared<'g, T>,
         success: Ordering,
         failure: Ordering,
-        _: &'g Guard<'_>,
     ) -> Result<Shared<'g, T>, CompareExchangeError<'g, T>> {
         match self
             .0
@@ -84,7 +79,7 @@ pub(crate) struct CompareExchangeError<'g, T> {
 }
 
 pub(crate) struct Shared<'g, T> {
-    ptr: *mut Linked<T>,
+    ptr: *mut Gc<T>,
     _g: PhantomData<&'g ()>,
 }
 
@@ -93,23 +88,23 @@ impl<'g, T> Shared<'g, T> {
         Shared::from(ptr::null_mut())
     }
 
-    pub(crate) fn boxed(value: T, collector: &Collector) -> Self {
-        Shared::from(collector.link_boxed(value))
+    pub(crate) fn boxed(value: T) -> Self {
+        Shared::from(Box::into_raw(Box::new(Gc::new(value))))
     }
 
-    pub(crate) unsafe fn into_box(self) -> Box<Linked<T>> {
+    pub(crate) unsafe fn into_box(self) -> Box<Gc<T>> {
         Box::from_raw(self.ptr)
     }
 
-    pub(crate) unsafe fn as_ptr(&self) -> *mut Linked<T> {
+    pub(crate) unsafe fn as_ptr(&self) -> *mut Gc<T> {
         self.ptr
     }
 
-    pub(crate) unsafe fn as_ref(&self) -> Option<&'g Linked<T>> {
+    pub(crate) unsafe fn as_ref(&self) -> Option<&'g Gc<T>> {
         self.ptr.as_ref()
     }
 
-    pub(crate) unsafe fn deref(&self) -> &'g Linked<T> {
+    pub(crate) unsafe fn deref(&self) -> &'g Gc<T> {
         &*self.ptr
     }
 
@@ -134,37 +129,11 @@ impl<T> Clone for Shared<'_, T> {
 
 impl<T> Copy for Shared<'_, T> {}
 
-impl<T> From<*mut Linked<T>> for Shared<'_, T> {
-    fn from(ptr: *mut Linked<T>) -> Self {
+impl<T> From<*mut Gc<T>> for Shared<'_, T> {
+    fn from(ptr: *mut Gc<T>) -> Self {
         Shared {
             ptr,
             _g: PhantomData,
-        }
-    }
-}
-
-pub(crate) trait RetireShared {
-    unsafe fn retire_shared<T>(&self, shared: Shared<'_, T>);
-}
-
-impl RetireShared for Guard<'_> {
-    unsafe fn retire_shared<T>(&self, shared: Shared<'_, T>) {
-        self.defer_retire(shared.ptr, seize::reclaim::boxed::<Linked<T>>);
-    }
-}
-
-pub(crate) enum GuardRef<'g> {
-    Owned(Guard<'g>),
-    Ref(&'g Guard<'g>),
-}
-
-impl<'g> Deref for GuardRef<'g> {
-    type Target = Guard<'g>;
-
-    #[inline]
-    fn deref(&self) -> &Guard<'g> {
-        match *self {
-            GuardRef::Owned(ref guard) | GuardRef::Ref(&ref guard) => guard,
         }
     }
 }
