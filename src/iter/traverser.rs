@@ -1,6 +1,6 @@
 use crate::node::{BinEntry, Node, TreeNode};
 use crate::raw::Table;
-use crate::reclaim::{Guard, Linked, Shared};
+use crate::reclaim::Shared;
 use std::gc::Gc;
 use std::sync::atomic::Ordering;
 
@@ -26,12 +26,10 @@ pub(crate) struct NodeIter<'g, K, V> {
 
     /// Initial table size
     base_size: usize,
-
-    guard: &'g Guard<'g>,
 }
 
 impl<'g, K, V> NodeIter<'g, K, V> {
-    pub(crate) fn new(table: Shared<'g, Table<K, V>>, guard: &'g Guard<'_>) -> Self {
+    pub(crate) fn new(table: Shared<'g, Table<K, V>>) -> Self {
         let (table, len) = if table.is_null() {
             (None, 0)
         } else {
@@ -50,7 +48,6 @@ impl<'g, K, V> NodeIter<'g, K, V> {
             base_index: 0,
             index: 0,
             base_limit: len,
-            guard,
         }
     }
 
@@ -153,7 +150,7 @@ impl<'g, K, V> Iterator for NodeIter<'g, K, V> {
             let t = self.table.expect("is_none in if above");
             let i = self.index;
             let n = t.len();
-            let bin = t.bin(i, self.guard);
+            let bin = t.bin(i);
             if !bin.is_null() {
                 // safety: flurry does not drop or move until after guard drop
                 let bin = unsafe { bin.deref() };
@@ -161,7 +158,7 @@ impl<'g, K, V> Iterator for NodeIter<'g, K, V> {
                     BinEntry::Moved => {
                         // recurse down into the target table
                         // safety: same argument as for following Moved in Table::find
-                        self.table = Some(unsafe { t.next_table(self.guard).deref() });
+                        self.table = Some(unsafe { t.next_table().deref() });
                         self.prev = None;
                         // make sure we can get back "up" to where we're at
                         self.push_state(t, i, n);
@@ -222,28 +219,24 @@ mod tests {
 
     #[test]
     fn iter_new() {
-        let guard = unsafe { seize::Guard::unprotected() };
-        let iter = NodeIter::<usize, usize>::new(Shared::null(), &guard);
+        let iter = NodeIter::<usize, usize>::new(Shared::null());
         assert_eq!(iter.count(), 0);
     }
 
     #[test]
     fn iter_empty() {
-        let collector = seize::Collector::new();
-
-        let table = Shared::boxed(Table::<usize, usize>::new(16, &collector));
-        let guard = collector.enter();
-        let iter = NodeIter::new(table, &guard);
+        let table = Shared::boxed(Table::<usize, usize>::new(16));
+        let iter = NodeIter::new(table);
         assert_eq!(iter.count(), 0);
 
         // safety: nothing holds on to references into the table any more
         let mut t = unsafe { table.into_box() };
+        // FIXME: use RefCell?
         t.drop_bins();
     }
 
     #[test]
     fn iter_simple() {
-        let collector = seize::Collector::new();
         let mut bins = vec![Atomic::null(); 16];
         bins[8] = Atomic::from(Shared::boxed(BinEntry::Node(Node {
             hash: 0,
@@ -253,10 +246,9 @@ mod tests {
             lock: Mutex::new(()),
         })));
 
-        let table = Shared::boxed(Table::from(bins, &collector));
-        let guard = collector.enter();
+        let table = Shared::boxed(Table::from(bins));
         {
-            let mut iter = NodeIter::new(table, &guard);
+            let mut iter = NodeIter::new(table);
             let e = iter.next().unwrap();
             assert_eq!(e.key, 0);
             assert!(iter.next().is_none());
@@ -270,7 +262,6 @@ mod tests {
     #[test]
     fn iter_fw() {
         // construct the forwarded-to table
-        let collector = seize::Collector::new();
         let mut deep_bins = vec![Atomic::null(); 16];
         deep_bins[8] = Atomic::from(Shared::boxed(BinEntry::Node(Node {
             hash: 0,
@@ -280,15 +271,14 @@ mod tests {
             lock: Mutex::new(()),
         })));
 
-        let guard = collector.enter();
-        let deep_table = Shared::boxed(Table::from(deep_bins, &collector));
+        let deep_table = Shared::boxed(Table::from(deep_bins));
 
         // construct the forwarded-from table
         let mut bins = vec![Shared::null(); 16];
-        let table = Table::<usize, usize>::new(bins.len(), &collector);
+        let table = Table::<usize, usize>::new(bins.len());
         for bin in &mut bins[8..] {
             // this also sets table.next_table to deep_table
-            *bin = table.get_moved(deep_table, &guard);
+            *bin = table.get_moved(deep_table);
         }
         // this cannot use Table::from(bins), since we need the table to get
         // the Moved and set its next_table
@@ -297,7 +287,7 @@ mod tests {
         }
         let table = Shared::boxed(table);
         {
-            let mut iter = NodeIter::new(table, &guard);
+            let mut iter = NodeIter::new(table);
             let e = iter.next().unwrap();
             assert_eq!(e.key, 0);
             assert!(iter.next().is_none());

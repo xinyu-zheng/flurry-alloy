@@ -56,7 +56,7 @@ impl<T, S> HashSetRef<'_, T, S> {
     ///
     /// See also [`HashSet::iter`].
     pub fn iter(&self) -> Keys<'_, T, ()> {
-        self.set.iter(&self.guard)
+        self.set.iter()
     }
 }
 
@@ -74,7 +74,7 @@ where
         T: Borrow<Q>,
         Q: ?Sized + Hash + Ord,
     {
-        self.set.contains(value, &self.guard)
+        self.set.contains(value)
     }
 
     /// Returns a reference to the element in the set, if any, that is equal to the given value.
@@ -85,28 +85,28 @@ where
         T: Borrow<Q>,
         Q: ?Sized + Hash + Ord,
     {
-        self.set.get(value, &self.guard)
+        self.set.get(value)
     }
 
     /// Returns `true` if `self` has no elements in common with `other`.
     ///
     /// See also [`HashSet::is_disjoint`].
     pub fn is_disjoint(&self, other: &HashSetRef<'_, T, S>) -> bool {
-        self.set.is_disjoint(other.set, &self.guard, &other.guard)
+        self.set.is_disjoint(other.set)
     }
 
     /// Returns `true` if the set is a subset of another, i.e., `other` contains at least all the values in `self`.
     ///
     /// See also [`HashSet::is_subset`].
     pub fn is_subset(&self, other: &HashSetRef<'_, T, S>) -> bool {
-        self.set.is_subset(other.set, &self.guard, &other.guard)
+        self.set.is_subset(other.set)
     }
 
     /// Returns `true` if the set is a superset of another, i.e., `self` contains at least all the values in `other`.
     ///
     /// See also [`HashSet::is_superset`].
     pub fn is_superset(&self, other: &HashSetRef<'_, T, S>) -> bool {
-        self.set.is_superset(other.set, &self.guard, &other.guard)
+        self.set.is_superset(other.set)
     }
 }
 
@@ -119,7 +119,7 @@ where
     ///
     /// See also [`HashSet::insert`].
     pub fn insert(&self, value: T) -> bool {
-        self.set.insert(value, &self.guard)
+        self.set.insert(value)
     }
 
     /// Removes a value from the set.
@@ -130,7 +130,7 @@ where
         T: Borrow<Q>,
         Q: ?Sized + Hash + Ord,
     {
-        self.set.remove(value, &self.guard)
+        self.set.remove(value)
     }
 
     /// Removes and returns the value in the set, if any, that is equal to the given one.
@@ -141,7 +141,7 @@ where
         T: Borrow<Q>,
         Q: ?Sized + Hash + Ord,
     {
-        self.set.take(value, &self.guard)
+        self.set.take(value)
     }
 
     /// Retains only the elements specified by the predicate.
@@ -151,7 +151,7 @@ where
     where
         F: FnMut(&T) -> bool,
     {
-        self.set.retain(f, &self.guard);
+        self.set.retain(f);
     }
 }
 
@@ -163,7 +163,7 @@ where
     ///
     /// See also [`HashSet::clear`].
     pub fn clear(&self) {
-        self.set.clear(&self.guard);
+        self.set.clear();
     }
 
     /// Tries to reserve capacity for at least `additional` more elements to
@@ -171,7 +171,7 @@ where
     ///
     /// See also [`HashSet::reserve`].
     pub fn reserve(&self, additional: usize) {
-        self.set.reserve(additional, &self.guard)
+        self.set.reserve(additional)
     }
 }
 
@@ -180,7 +180,7 @@ impl<'g, T, S> IntoIterator for &'g HashSetRef<'_, T, S> {
     type Item = &'g T;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.set.iter(&self.guard)
+        self.set.iter()
     }
 }
 
@@ -215,7 +215,7 @@ where
     S: BuildHasher,
 {
     fn eq(&self, other: &HashSet<T, S>) -> bool {
-        self.set.guarded_eq(other, &self.guard, &other.guard())
+        self.set.guarded_eq(other)
     }
 }
 
@@ -225,7 +225,7 @@ where
     S: BuildHasher,
 {
     fn eq(&self, other: &HashSetRef<'_, T, S>) -> bool {
-        self.guarded_eq(other.set, &self.guard(), &other.guard)
+        self.guarded_eq(other.set)
     }
 }
 

@@ -208,8 +208,8 @@ impl<T, S> HashSet<T, S> {
     ///     println!("{}", x);
     /// }
     /// ```
-    pub fn iter<'g>(&'g self, guard: &'g Guard<'_>) -> Keys<'g, T, ()> {
-        self.map.keys(guard)
+    pub fn iter<'g>(&'g self) -> Keys<'g, T, ()> {
+        self.map.keys()
     }
 }
 
@@ -240,12 +240,12 @@ where
     /// assert!(!set.contains(&1, &guard));
     /// ```
     #[inline]
-    pub fn contains<Q>(&self, value: &Q, guard: &Guard<'_>) -> bool
+    pub fn contains<Q>(&self, value: &Q) -> bool
     where
         T: Borrow<Q>,
         Q: ?Sized + Hash + Ord,
     {
-        self.map.contains_key(value, guard)
+        self.map.contains_key(value)
     }
 
     /// Returns a reference to the element in the set, if any, that is equal to the given value.
@@ -267,12 +267,12 @@ where
     /// assert_eq!(set.get(&2, &guard), Some(&2));
     /// assert_eq!(set.get(&4, &guard), None);
     /// ```
-    pub fn get<'g, Q>(&'g self, value: &Q, guard: &'g Guard<'_>) -> Option<&'g T>
+    pub fn get<'g, Q>(&'g self, value: &Q) -> Option<&'g T>
     where
         T: Borrow<Q>,
         Q: ?Sized + Hash + Ord,
     {
-        self.map.get_key_value(value, guard).map(|(k, _)| k)
+        self.map.get_key_value(value).map(|(k, _)| k)
     }
 
     /// Returns `true` if `self` has no elements in common with `other`.
@@ -295,14 +295,9 @@ where
     /// assert!(!a.pin().is_disjoint(&b.pin()));
     ///
     /// ```
-    pub fn is_disjoint(
-        &self,
-        other: &HashSet<T, S>,
-        our_guard: &Guard<'_>,
-        their_guard: &Guard<'_>,
-    ) -> bool {
-        for value in self.iter(our_guard) {
-            if other.contains(value, their_guard) {
+    pub fn is_disjoint(&self, other: &HashSet<T, S>) -> bool {
+        for value in self.iter() {
+            if other.contains(value) {
                 return false;
             }
         }
@@ -327,14 +322,9 @@ where
     /// set.pin().insert(4);
     /// assert!(!set.pin().is_subset(&sup.pin()));
     /// ```
-    pub fn is_subset(
-        &self,
-        other: &HashSet<T, S>,
-        our_guard: &Guard<'_>,
-        their_guard: &Guard<'_>,
-    ) -> bool {
-        for value in self.iter(our_guard) {
-            if !other.contains(value, their_guard) {
+    pub fn is_subset(&self, other: &HashSet<T, S>) -> bool {
+        for value in self.iter() {
+            if !other.contains(value) {
                 return false;
             }
         }
@@ -362,22 +352,12 @@ where
     /// set.pin().insert(2);
     /// assert!(set.pin().is_superset(&sub.pin()));
     /// ```
-    pub fn is_superset(
-        &self,
-        other: &HashSet<T, S>,
-        our_guard: &Guard<'_>,
-        their_guard: &Guard<'_>,
-    ) -> bool {
-        other.is_subset(self, their_guard, our_guard)
+    pub fn is_superset(&self, other: &HashSet<T, S>) -> bool {
+        other.is_subset(self)
     }
 
-    pub(crate) fn guarded_eq(
-        &self,
-        other: &Self,
-        our_guard: &Guard<'_>,
-        their_guard: &Guard<'_>,
-    ) -> bool {
-        self.map.guarded_eq(&other.map, our_guard, their_guard)
+    pub(crate) fn guarded_eq(&self, other: &Self) -> bool {
+        self.map.guarded_eq(&other.map)
     }
 }
 
@@ -404,8 +384,8 @@ where
     /// assert_eq!(set.insert(2, &guard), false);
     /// assert!(set.contains(&2, &guard));
     /// ```
-    pub fn insert(&self, value: T, guard: &Guard<'_>) -> bool {
-        let old = self.map.insert(value, (), guard);
+    pub fn insert(&self, value: T) -> bool {
+        let old = self.map.insert(value, ());
         old.is_none()
     }
 
@@ -435,12 +415,12 @@ where
     /// assert!(!set.contains(&2, &guard));
     /// assert_eq!(set.remove(&2, &guard), false);
     /// ```
-    pub fn remove<Q>(&self, value: &Q, guard: &Guard<'_>) -> bool
+    pub fn remove<Q>(&self, value: &Q) -> bool
     where
         T: Borrow<Q>,
         Q: ?Sized + Hash + Ord,
     {
-        let removed = self.map.remove(value, guard);
+        let removed = self.map.remove(value);
         removed.is_some()
     }
 
@@ -463,12 +443,12 @@ where
     /// assert_eq!(set.take(&2, &guard), Some(&2));
     /// assert_eq!(set.take(&2, &guard), None);
     /// ```
-    pub fn take<'g, Q>(&'g self, value: &Q, guard: &'g Guard<'_>) -> Option<&'g T>
+    pub fn take<'g, Q>(&'g self, value: &Q) -> Option<&'g T>
     where
         T: Borrow<Q>,
         Q: ?Sized + Hash + Ord,
     {
-        self.map.remove_entry(value, guard).map(|(k, _)| k)
+        self.map.remove_entry(value).map(|(k, _)| k)
     }
 
     /// Retains only the elements specified by the predicate.
@@ -488,11 +468,11 @@ where
     /// set.pin().retain(|&e| e % 2 == 0);
     /// assert_eq!(set.pin().len(), 4);
     /// ```
-    pub fn retain<F>(&self, mut f: F, guard: &Guard<'_>)
+    pub fn retain<F>(&self, mut f: F)
     where
         F: FnMut(&T) -> bool,
     {
-        self.map.retain(|value, ()| f(value), guard)
+        self.map.retain(|value, ()| f(value))
     }
 }
 
@@ -513,16 +493,16 @@ where
     /// set.pin().clear();
     /// assert!(set.pin().is_empty());
     /// ```
-    pub fn clear(&self, guard: &Guard<'_>) {
-        self.map.clear(guard)
+    pub fn clear(&self) {
+        self.map.clear()
     }
 
     /// Tries to reserve capacity for at least `additional` more elements to
     /// be inserted in the `HashSet`.
     ///
     /// The collection may reserve more space to avoid frequent reallocations.
-    pub fn reserve(&self, additional: usize, guard: &Guard<'_>) {
-        self.map.reserve(additional, guard)
+    pub fn reserve(&self, additional: usize) {
+        self.map.reserve(additional)
     }
 }
 
@@ -548,8 +528,7 @@ where
     T: Debug,
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let guard = self.guard();
-        f.debug_set().entries(self.iter(&guard)).finish()
+        f.debug_set().entries(self.iter()).finish()
     }
 }
 

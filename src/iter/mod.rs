@@ -1,7 +1,7 @@
 mod traverser;
 pub(crate) use traverser::NodeIter;
 
-use crate::reclaim::{Guard, Shared};
+use crate::reclaim::Shared;
 use std::sync::atomic::Ordering;
 
 /// An iterator over a map's entries.
@@ -10,7 +10,6 @@ use std::sync::atomic::Ordering;
 #[derive(Debug)]
 pub struct Iter<'g, K, V> {
     pub(crate) node_iter: NodeIter<'g, K, V>,
-    pub(crate) guard: &'g Guard<'g>,
 }
 
 impl<'g, K, V> Iter<'g, K, V> {
@@ -52,7 +51,6 @@ impl<'g, K, V> Iterator for Keys<'g, K, V> {
 #[derive(Debug)]
 pub struct Values<'g, K, V> {
     pub(crate) node_iter: NodeIter<'g, K, V>,
-    pub(crate) guard: &'g Guard<'g>,
 }
 
 impl<'g, K, V> Iterator for Values<'g, K, V> {
@@ -76,13 +74,11 @@ mod tests {
     fn iter() {
         let map = HashMap::<usize, usize>::new();
 
-        let guard = map.guard();
-        map.insert(1, 42, &guard);
-        map.insert(2, 84, &guard);
+        map.insert(1, 42);
+        map.insert(2, 84);
 
-        let guard = map.guard();
         assert_eq!(
-            map.iter(&guard).collect::<HashSet<(&usize, &usize)>>(),
+            map.iter().collect::<HashSet<(&usize, &usize)>>(),
             HashSet::from_iter(vec![(&1, &42), (&2, &84)])
         );
     }
@@ -91,13 +87,11 @@ mod tests {
     fn keys() {
         let map = HashMap::<usize, usize>::new();
 
-        let guard = map.guard();
-        map.insert(1, 42, &guard);
-        map.insert(2, 84, &guard);
+        map.insert(1, 42);
+        map.insert(2, 84);
 
-        let guard = map.guard();
         assert_eq!(
-            map.keys(&guard).collect::<HashSet<&usize>>(),
+            map.keys().collect::<HashSet<&usize>>(),
             HashSet::from_iter(vec![&1, &2])
         );
     }
@@ -107,12 +101,12 @@ mod tests {
         let map = HashMap::<usize, usize>::new();
 
         let mut guard = map.guard();
-        map.insert(1, 42, &guard);
-        map.insert(2, 84, &guard);
+        map.insert(1, 42);
+        map.insert(2, 84);
         guard.refresh();
 
         assert_eq!(
-            map.values(&guard).collect::<HashSet<&usize>>(),
+            map.values().collect::<HashSet<&usize>>(),
             HashSet::from_iter(vec![&42, &84])
         );
     }

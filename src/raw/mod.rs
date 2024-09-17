@@ -1,7 +1,7 @@
 use seize::Linked;
 
 use crate::node::*;
-use crate::reclaim::{self, Atomic, Collector, Guard, Shared};
+use crate::reclaim::{self, Atomic, Guard, Shared};
 use std::borrow::Borrow;
 use std::fmt::Debug;
 use std::gc::Gc;
@@ -52,7 +52,7 @@ pub(crate) struct Table<K, V> {
 }
 
 impl<K, V> Table<K, V> {
-    pub(crate) fn from(bins: Vec<Atomic<BinEntry<K, V>>>, collector: &Collector) -> Self {
+    pub(crate) fn from(bins: Vec<Atomic<BinEntry<K, V>>>) -> Self {
         Self {
             bins: bins.into_boxed_slice(),
             moved: Atomic::from(Shared::boxed(BinEntry::Moved)),
@@ -60,8 +60,8 @@ impl<K, V> Table<K, V> {
         }
     }
 
-    pub(crate) fn new(bins: usize, collector: &Collector) -> Self {
-        Self::from(vec![Atomic::null(); bins], collector)
+    pub(crate) fn new(bins: usize) -> Self {
+        Self::from(vec![Atomic::null(); bins])
     }
 
     pub(crate) fn is_empty(&self) -> bool {
@@ -75,9 +75,8 @@ impl<K, V> Table<K, V> {
     pub(crate) fn get_moved<'g>(
         &'g self,
         for_table: Shared<'g, Table<K, V>>,
-        guard: &'g Guard<'_>,
     ) -> Shared<'g, BinEntry<K, V>> {
-        match self.next_table(guard) {
+        match self.next_table() {
             t if t.is_null() => {
                 // if a no next table is yet associated with this table,
                 // create one and store it in `self.next_table`
@@ -107,7 +106,6 @@ impl<K, V> Table<K, V> {
         bin: &Gc<BinEntry<K, V>>,
         hash: u64,
         key: &Q,
-        guard: &'g Guard<'_>,
     ) -> Shared<'g, BinEntry<K, V>>
     where
         K: Borrow<Q>,
@@ -141,14 +139,14 @@ impl<K, V> Table<K, V> {
                 // safety: `self` is a reference to the old table. We got that under the given Guard.
                 // Since we have not yet dropped that guard, _this_ table has not been garbage collected,
                 // and so the _later_ table in `next_table`, _definitely_ hasn't.
-                let mut table = unsafe { self.next_table(guard).deref() };
+                let mut table = unsafe { self.next_table().deref() };
 
                 loop {
                     if table.is_empty() {
                         return Shared::null();
                     }
                     let bini = table.bini(hash);
-                    let bin = table.bin(bini, guard);
+                    let bin = table.bin(bini);
                     if bin.is_null() {
                         return Shared::null();
                     }
@@ -157,11 +155,11 @@ impl<K, V> Table<K, V> {
 
                     match **bin {
                         BinEntry::Node(_) | BinEntry::Tree(_) => {
-                            break table.find(bin, hash, key, guard)
+                            break table.find(bin, hash, key)
                         }
                         BinEntry::Moved => {
                             // safety: same as above.
-                            table = unsafe { table.next_table(guard).deref() };
+                            table = unsafe { table.next_table().deref() };
                             continue;
                         }
                         BinEntry::TreeNode(_) => unreachable!("`find` was called on a Moved entry pointing to a TreeNode, which cannot be the first entry in a bin"),
@@ -176,7 +174,7 @@ impl<K, V> Table<K, V> {
             BinEntry::Tree(_) => {
                 // safety: this cast is fine because TreeBin::find
                 // only needs a shared reference to the bin
-                TreeBin::find(Shared::from(bin as *const _ as *mut _), hash, key, guard)
+                TreeBin::find(Shared::from(bin as *const _ as *mut _), hash, key)
             }
         }
     }
@@ -246,11 +244,6 @@ impl<K, V> Table<K, V> {
 
 impl<K, V> Drop for Table<K, V> {
     fn drop(&mut self) {
-        // safety: we have &mut self _and_ all references we have returned are bound to the
-        // lifetime of their borrow of self, so there cannot be any outstanding references to
-        // anything in the map.
-        let guard = unsafe { Guard::unprotected() };
-
         // since BinEntry::Nodes are either dropped by drop_bins or transferred to a new table,
         // all bins are empty or contain a Shared pointing to shared the BinEntry::Moved (if
         // self.bins was not replaced by drop_bins anyway)
@@ -303,7 +296,7 @@ impl<K, V> Table<K, V> {
     }
 
     #[inline]
-    pub(crate) fn bin<'g>(&'g self, i: usize, guard: &'g Guard<'_>) -> Shared<'g, BinEntry<K, V>> {
+    pub(crate) fn bin<'g>(&'g self, i: usize) -> Shared<'g, BinEntry<K, V>> {
         self.bins[i].load(Ordering::Acquire)
     }
 
@@ -314,7 +307,6 @@ impl<K, V> Table<K, V> {
         i: usize,
         current: Shared<'_, BinEntry<K, V>>,
         new: Shared<'g, BinEntry<K, V>>,
-        guard: &'g Guard<'_>,
     ) -> Result<Shared<'g, BinEntry<K, V>>, reclaim::CompareExchangeError<'g, BinEntry<K, V>>> {
         self.bins[i].compare_exchange(current, new, Ordering::AcqRel, Ordering::Acquire)
     }
@@ -325,7 +317,7 @@ impl<K, V> Table<K, V> {
     }
 
     #[inline]
-    pub(crate) fn next_table<'g>(&'g self, guard: &'g Guard<'_>) -> Shared<'g, Table<K, V>> {
+    pub(crate) fn next_table<'g>(&'g self) -> Shared<'g, Table<K, V>> {
         self.next_table.load(Ordering::SeqCst)
     }
 }

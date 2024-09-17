@@ -57,7 +57,7 @@ impl<K, V, S> HashMapRef<'_, K, V, S> {
     ///
     /// See also [`HashMap::iter`].
     pub fn iter(&self) -> Iter<'_, K, V> {
-        self.map.iter(&self.guard)
+        self.map.iter()
     }
 
     /// An iterator visiting all keys in arbitrary order.
@@ -66,7 +66,7 @@ impl<K, V, S> HashMapRef<'_, K, V, S> {
     ///
     /// See also [`HashMap::keys`].
     pub fn keys(&self) -> Keys<'_, K, V> {
-        self.map.keys(&self.guard)
+        self.map.keys()
     }
 
     /// An iterator visiting all values in arbitrary order.
@@ -75,7 +75,7 @@ impl<K, V, S> HashMapRef<'_, K, V, S> {
     ///
     /// See also [`HashMap::values`].
     pub fn values(&self) -> Values<'_, K, V> {
-        self.map.values(&self.guard)
+        self.map.values()
     }
 }
 
@@ -90,7 +90,7 @@ where
     ///
     /// See also [`HashMap::reserve`].
     pub fn reserve(&self, additional: usize) {
-        self.map.reserve(additional, &self.guard)
+        self.map.reserve(additional)
     }
 }
 
@@ -107,7 +107,7 @@ where
         K: Borrow<Q>,
         Q: ?Sized + Hash + Ord,
     {
-        self.map.contains_key(key, &self.guard)
+        self.map.contains_key(key)
     }
 
     /// Returns a reference to the value corresponding to the key.
@@ -119,7 +119,7 @@ where
         K: Borrow<Q>,
         Q: ?Sized + Hash + Ord,
     {
-        self.map.get(key, &self.guard)
+        self.map.get(key)
     }
 
     /// Returns the key-value pair corresponding to `key`.
@@ -131,7 +131,7 @@ where
         K: Borrow<Q>,
         Q: ?Sized + Hash + Ord,
     {
-        self.map.get_key_value(key, &self.guard)
+        self.map.get_key_value(key)
     }
 }
 
@@ -143,7 +143,7 @@ where
     ///
     /// See also [`HashMap::clear`].
     pub fn clear(&self) {
-        self.map.clear(&self.guard);
+        self.map.clear();
     }
 }
 
@@ -157,7 +157,7 @@ where
     ///
     /// See also [`HashMap::insert`].
     pub fn insert(&self, key: K, value: V) -> Option<&'_ V> {
-        self.map.insert(key, value, &self.guard)
+        self.map.insert(key, value)
     }
 
     /// Inserts a key-value pair into the map unless the key already exists.
@@ -178,8 +178,7 @@ where
         Q: ?Sized + Hash + Ord,
         F: FnOnce(&K, &V) -> Option<V>,
     {
-        self.map
-            .compute_if_present(key, remapping_function, &self.guard)
+        self.map.compute_if_present(key, remapping_function)
     }
 
     /// Removes a key-value pair from the map, and returns the removed value (if any).
@@ -190,7 +189,7 @@ where
         K: Borrow<Q>,
         Q: ?Sized + Hash + Ord,
     {
-        self.map.remove(key, &self.guard)
+        self.map.remove(key)
     }
 
     /// Removes a key from the map, returning the stored key and value if the
@@ -202,7 +201,7 @@ where
         K: Borrow<Q>,
         Q: ?Sized + Hash + Ord,
     {
-        self.map.remove_entry(key, &self.guard)
+        self.map.remove_entry(key)
     }
 
     /// Retains only the elements specified by the predicate.
@@ -212,7 +211,7 @@ where
     where
         F: FnMut(&K, &V) -> bool,
     {
-        self.map.retain(f, &self.guard);
+        self.map.retain(f);
     }
 
     /// Retains only the elements specified by the predicate.
@@ -222,7 +221,7 @@ where
     where
         F: FnMut(&K, &V) -> bool,
     {
-        self.map.retain_force(f, &self.guard);
+        self.map.retain_force(f);
     }
 }
 
@@ -231,7 +230,7 @@ impl<'g, K, V, S> IntoIterator for &'g HashMapRef<'_, K, V, S> {
     type Item = (&'g K, &'g V);
 
     fn into_iter(self) -> Self::IntoIter {
-        self.map.iter(&self.guard)
+        self.map.iter()
     }
 }
 
@@ -258,7 +257,7 @@ where
     S: BuildHasher,
 {
     fn eq(&self, other: &Self) -> bool {
-        self.map.guarded_eq(other.map, &self.guard, &other.guard)
+        self.map.guarded_eq(other.map)
     }
 }
 
@@ -269,7 +268,7 @@ where
     S: BuildHasher,
 {
     fn eq(&self, other: &HashMap<K, V, S>) -> bool {
-        self.map.guarded_eq(other, &self.guard, &other.guard())
+        self.map.guarded_eq(other)
     }
 }
 
@@ -280,7 +279,7 @@ where
     S: BuildHasher,
 {
     fn eq(&self, other: &HashMapRef<'_, K, V, S>) -> bool {
-        self.guarded_eq(other.map, &self.guard(), &other.guard)
+        self.guarded_eq(other.map)
     }
 }
 

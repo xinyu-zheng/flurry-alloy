@@ -1,5 +1,5 @@
 use crate::raw::Table;
-use crate::reclaim::{Atomic, Collector, Guard, RetireShared, Shared};
+use crate::reclaim::{Atomic, Shared};
 use core::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use parking_lot::Mutex;
 use seize::{Link, Linked};
@@ -135,7 +135,6 @@ impl<K, V> TreeNode<K, V> {
         from: Shared<'g, BinEntry<K, V>>,
         hash: u64,
         key: &Q,
-        guard: &'g Guard<'_>,
     ) -> Shared<'g, BinEntry<K, V>>
     where
         K: Borrow<Q>,
@@ -245,7 +244,7 @@ where
     /// # Safety
     ///
     /// The `bin` pointer and its successors were created with `Shared::boxed` and never shared.
-    pub(crate) unsafe fn new(bin: Shared<'_, BinEntry<K, V>>, guard: &Guard<'_>) -> Self {
+    pub(crate) unsafe fn new(bin: Shared<'_, BinEntry<K, V>>) -> Self {
         let mut root = Shared::null();
 
         // safety: We own the nodes for creating this new TreeBin, so they are
@@ -309,7 +308,7 @@ where
                                 .store(x, Ordering::Relaxed);
                         }
                     }
-                    root = TreeNode::balance_insertion(root, x, guard);
+                    root = TreeNode::balance_insertion(root, x);
                     break;
                 }
             }
@@ -318,7 +317,7 @@ where
         }
 
         if cfg!(debug_assertions) {
-            TreeNode::check_invariants(root, guard);
+            TreeNode::check_invariants(root);
         }
         TreeBin {
             root: Atomic::from(root),
@@ -332,14 +331,14 @@ where
 
 impl<K, V> TreeBin<K, V> {
     /// Acquires write lock for tree restucturing.
-    fn lock_root(&self, guard: &Guard<'_>, collector: &Collector) {
+    fn lock_root(&self) {
         if self
             .lock_state
             .compare_exchange(0, WRITER, Ordering::SeqCst, Ordering::Relaxed)
             .is_err()
         {
             // the current lock state is non-zero, which means the lock is contended
-            self.contended_lock(guard, collector);
+            self.contended_lock();
         }
     }
 
@@ -349,7 +348,7 @@ impl<K, V> TreeBin<K, V> {
     }
 
     /// Possibly blocks awaiting root lock.
-    fn contended_lock(&self, guard: &Guard<'_>, collector: &Collector) {
+    fn contended_lock(&self) {
         let mut waiting = false;
         let mut state: i64;
         loop {
@@ -413,7 +412,6 @@ impl<K, V> TreeBin<K, V> {
         bin: Shared<'g, BinEntry<K, V>>,
         hash: u64,
         key: &Q,
-        guard: &'g Guard<'_>,
     ) -> Shared<'g, BinEntry<K, V>>
     where
         K: Borrow<Q>,
@@ -467,7 +465,7 @@ impl<K, V> TreeBin<K, V> {
                 let p = if root.is_null() {
                     Shared::null()
                 } else {
-                    TreeNode::find_tree_node(root, hash, key, guard)
+                    TreeNode::find_tree_node(root, hash, key)
                 };
                 if bin_deref.lock_state.fetch_add(-READER, Ordering::SeqCst) == (READER | WAITER) {
                     // we were the last reader holding up a waiting writer, so
@@ -515,8 +513,6 @@ impl<K, V> TreeBin<K, V> {
         &'g self,
         p: Shared<'g, BinEntry<K, V>>,
         drop_value: bool,
-        guard: &'g Guard<'_>,
-        collector: &Collector,
     ) -> bool {
         // safety: we read under our guard, at which point the tree
         // structure was valid. Since our guard marks the current thread as active,
@@ -583,7 +579,7 @@ impl<K, V> TreeBin<K, V> {
         // if we get here, we know that we will still be a tree and have
         // unlinked the `next` and `prev` pointers, so it's time to restructure
         // the tree
-        self.lock_root(guard, collector);
+        self.lock_root();
         // NOTE: since we have the write lock for the tree, we know that all
         // readers will read along the linear `next` pointers until we release
         // the lock (these pointers were adjusted above to exclude the removed
@@ -724,7 +720,7 @@ impl<K, V> TreeBin<K, V> {
             if p_deref.red.load(Ordering::Relaxed) {
                 root
             } else {
-                TreeNode::balance_deletion(root, replacement, guard)
+                TreeNode::balance_deletion(root, replacement)
             },
             Ordering::Relaxed,
         );
@@ -762,7 +758,7 @@ impl<K, V> TreeBin<K, V> {
         }
 
         if cfg!(debug_assertions) {
-            TreeNode::check_invariants(self.root.load(Ordering::SeqCst), guard);
+            TreeNode::check_invariants(self.root.load(Ordering::SeqCst));
         }
         false
     }
@@ -780,8 +776,6 @@ where
         hash: u64,
         key: K,
         value: Shared<'g, V>,
-        guard: &'g Guard<'_>,
-        collector: &Collector,
     ) -> Shared<'g, BinEntry<K, V>> {
         let mut p = self.root.load(Ordering::SeqCst);
         if p.is_null() {
@@ -886,9 +880,9 @@ where
                         .red
                         .store(true, Ordering::SeqCst);
                 } else {
-                    self.lock_root(guard, collector);
+                    self.lock_root();
                     self.root.store(
-                        TreeNode::balance_insertion(self.root.load(Ordering::Relaxed), x, guard),
+                        TreeNode::balance_insertion(self.root.load(Ordering::Relaxed), x),
                         Ordering::Relaxed,
                     );
                     self.unlock_root();
@@ -898,7 +892,7 @@ where
         }
 
         if cfg!(debug_assertions) {
-            TreeNode::check_invariants(self.root.load(Ordering::SeqCst), guard);
+            TreeNode::check_invariants(self.root.load(Ordering::SeqCst));
         }
         Shared::null()
     }
@@ -920,10 +914,7 @@ impl<K, V> TreeBin<K, V> {
     /// The given bin must be a valid, non-null BinEntry::TreeBin and the caller must ensure
     /// that no references to the bin can be obtained by other threads after the call to this
     /// method.
-    pub(crate) unsafe fn defer_drop_without_values<'g>(
-        bin: Shared<'g, BinEntry<K, V>>,
-        guard: &'g Guard<'_>,
-    ) {
+    pub(crate) unsafe fn defer_drop_without_values<'g>(bin: Shared<'g, BinEntry<K, V>>) {
         guard.defer_retire(bin.as_ptr(), |link| {
             let bin = unsafe {
                 // SAFETY: `bin` is a `Linked<BinEntry<K, V>>`
@@ -954,9 +945,8 @@ impl<K, V> TreeBin<K, V> {
 
         // swap out first pointer so nodes will not get dropped again when
         // `tree_bin` is dropped
-        let guard = Guard::unprotected();
         let p = self.first.swap(Shared::null(), Ordering::Relaxed);
-        Self::drop_tree_nodes(p, drop_values, &guard);
+        Self::drop_tree_nodes(p, drop_values);
     }
 
     /// Drops the given list of tree nodes, but only drops their values when specified.
@@ -965,11 +955,7 @@ impl<K, V> TreeBin<K, V> {
     /// The pointers to the tree nodes must be valid and the caller must be the single owner
     /// of the tree nodes. If the nodes' values are to be dropped, there must be no outstanding
     /// references to these values in other threads and it must be impossible to obtain them.
-    pub(crate) unsafe fn drop_tree_nodes<'g>(
-        from: Shared<'g, BinEntry<K, V>>,
-        drop_values: bool,
-        guard: &'g Guard<'_>,
-    ) {
+    pub(crate) unsafe fn drop_tree_nodes<'g>(from: Shared<'g, BinEntry<K, V>>, drop_values: bool) {
         let mut p = from;
         while !p.is_null() {
             if let BinEntry::TreeNode(tree_node) = p.into_box().value {
@@ -1017,7 +1003,6 @@ impl<K, V> TreeNode<K, V> {
     fn rotate_left<'g>(
         mut root: Shared<'g, BinEntry<K, V>>,
         p: Shared<'g, BinEntry<K, V>>,
-        guard: &'g Guard<'_>,
     ) -> Shared<'g, BinEntry<K, V>> {
         if p.is_null() {
             return root;
@@ -1062,7 +1047,6 @@ impl<K, V> TreeNode<K, V> {
     fn rotate_right<'g>(
         mut root: Shared<'g, BinEntry<K, V>>,
         p: Shared<'g, BinEntry<K, V>>,
-        guard: &'g Guard<'_>,
     ) -> Shared<'g, BinEntry<K, V>> {
         if p.is_null() {
             return root;
@@ -1107,7 +1091,6 @@ impl<K, V> TreeNode<K, V> {
     fn balance_insertion<'g>(
         mut root: Shared<'g, BinEntry<K, V>>,
         mut x: Shared<'g, BinEntry<K, V>>,
-        guard: &'g Guard<'_>,
     ) -> Shared<'g, BinEntry<K, V>> {
         // safety: the containing TreeBin of all TreeNodes was read under our
         // guard, at which point the tree structure was valid. Since our guard
@@ -1147,7 +1130,7 @@ impl<K, V> TreeNode<K, V> {
                 } else {
                     if x == treenode!(x_parent).right.load(Ordering::Relaxed) {
                         x = x_parent;
-                        root = Self::rotate_left(root, x, guard);
+                        root = Self::rotate_left(root, x);
                         x_parent = treenode!(x).parent.load(Ordering::Relaxed);
                         x_parent_parent = if x_parent.is_null() {
                             Shared::null()
@@ -1161,7 +1144,7 @@ impl<K, V> TreeNode<K, V> {
                             treenode!(x_parent_parent)
                                 .red
                                 .store(true, Ordering::Relaxed);
-                            root = Self::rotate_right(root, x_parent_parent, guard);
+                            root = Self::rotate_right(root, x_parent_parent);
                         }
                     }
                 }
@@ -1179,7 +1162,7 @@ impl<K, V> TreeNode<K, V> {
             } else {
                 if x == treenode!(x_parent).left.load(Ordering::Relaxed) {
                     x = x_parent;
-                    root = Self::rotate_right(root, x, guard);
+                    root = Self::rotate_right(root, x);
                     x_parent = treenode!(x).parent.load(Ordering::Relaxed);
                     x_parent_parent = if x_parent.is_null() {
                         Shared::null()
@@ -1193,7 +1176,7 @@ impl<K, V> TreeNode<K, V> {
                         treenode!(x_parent_parent)
                             .red
                             .store(true, Ordering::Relaxed);
-                        root = Self::rotate_left(root, x_parent_parent, guard);
+                        root = Self::rotate_left(root, x_parent_parent);
                     }
                 }
             }
@@ -1203,7 +1186,6 @@ impl<K, V> TreeNode<K, V> {
     fn balance_deletion<'g>(
         mut root: Shared<'g, BinEntry<K, V>>,
         mut x: Shared<'g, BinEntry<K, V>>,
-        guard: &'g Guard<'_>,
     ) -> Shared<'g, BinEntry<K, V>> {
         let mut x_parent: Shared<'_, BinEntry<K, V>>;
         let mut x_parent_left: Shared<'_, BinEntry<K, V>>;
@@ -1235,7 +1217,7 @@ impl<K, V> TreeNode<K, V> {
                         .red
                         .store(false, Ordering::Relaxed);
                     treenode!(x_parent).red.store(true, Ordering::Relaxed);
-                    root = Self::rotate_left(root, x_parent, guard);
+                    root = Self::rotate_left(root, x_parent);
                     x_parent = treenode!(x).parent.load(Ordering::Relaxed);
                     x_parent_right = if x_parent.is_null() {
                         Shared::null()
@@ -1262,7 +1244,7 @@ impl<K, V> TreeNode<K, V> {
                         treenode!(s_left).red.store(false, Ordering::Relaxed);
                     }
                     treenode!(x_parent_right).red.store(true, Ordering::Relaxed);
-                    root = Self::rotate_right(root, x_parent_right, guard);
+                    root = Self::rotate_right(root, x_parent_right);
                     x_parent = treenode!(x).parent.load(Ordering::Relaxed);
                     x_parent_right = if x_parent.is_null() {
                         Shared::null()
@@ -1286,7 +1268,7 @@ impl<K, V> TreeNode<K, V> {
                 }
                 if !x_parent.is_null() {
                     treenode!(x_parent).red.store(false, Ordering::Relaxed);
-                    root = Self::rotate_left(root, x_parent, guard);
+                    root = Self::rotate_left(root, x_parent);
                 }
             } else {
                 // symmetric
@@ -1294,7 +1276,7 @@ impl<K, V> TreeNode<K, V> {
                 {
                     treenode!(x_parent_left).red.store(false, Ordering::Relaxed);
                     treenode!(x_parent).red.store(true, Ordering::Relaxed);
-                    root = Self::rotate_right(root, x_parent, guard);
+                    root = Self::rotate_right(root, x_parent);
                     x_parent = treenode!(x).parent.load(Ordering::Relaxed);
                     x_parent_left = if x_parent.is_null() {
                         Shared::null()
@@ -1321,7 +1303,7 @@ impl<K, V> TreeNode<K, V> {
                         treenode!(s_right).red.store(false, Ordering::Relaxed);
                     }
                     treenode!(x_parent_left).red.store(true, Ordering::Relaxed);
-                    root = Self::rotate_left(root, x_parent_left, guard);
+                    root = Self::rotate_left(root, x_parent_left);
                     x_parent = treenode!(x).parent.load(Ordering::Relaxed);
                     x_parent_left = if x_parent.is_null() {
                         Shared::null()
@@ -1345,14 +1327,14 @@ impl<K, V> TreeNode<K, V> {
                 }
                 if !x_parent.is_null() {
                     treenode!(x_parent).red.store(false, Ordering::Relaxed);
-                    root = Self::rotate_right(root, x_parent, guard);
+                    root = Self::rotate_right(root, x_parent);
                 }
             }
             x = root;
         }
     }
     /// Checks invariants recursively for the tree of Nodes rootet at t.
-    fn check_invariants<'g>(t: Shared<'g, BinEntry<K, V>>, guard: &'g Guard<'_>) {
+    fn check_invariants<'g>(t: Shared<'g, BinEntry<K, V>>) {
         // safety: the containing TreeBin of all TreeNodes was read under our
         // guard, at which point the tree structure was valid. Since our guard
         // marks the current thread as active, the TreeNodes remain valid for
@@ -1424,10 +1406,10 @@ impl<K, V> TreeNode<K, V> {
             );
         }
         if !t_left.is_null() {
-            Self::check_invariants(t_left, guard)
+            Self::check_invariants(t_left)
         }
         if !t_right.is_null() {
-            Self::check_invariants(t_right, guard)
+            Self::check_invariants(t_right)
         }
     }
 }
@@ -1437,7 +1419,7 @@ mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
 
-    fn new_node(hash: u64, key: usize, value: usize, collector: &Collector) -> Node<usize, usize> {
+    fn new_node(hash: u64, key: usize, value: usize) -> Node<usize, usize> {
         Node {
             hash,
             key,
@@ -1449,31 +1431,25 @@ mod tests {
 
     #[test]
     fn find_node_no_match() {
-        let collector = seize::Collector::new();
-        let guard = collector.enter();
-
-        let node2 = new_node(4, 5, 6, &collector);
+        let node2 = new_node(4, 5, 6);
         let entry2 = BinEntry::Node(node2);
-        let node1 = new_node(1, 2, 3, &collector);
+        let node1 = new_node(1, 2, 3);
         node1.next.store(Shared::boxed(entry2), Ordering::SeqCst);
         let entry1 = Shared::boxed(BinEntry::Node(node1));
-        let mut tab = Table::from(vec![Atomic::from(entry1)], &collector);
+        let mut tab = Table::from(vec![Atomic::from(entry1)]);
 
         // safety: we have not yet dropped entry1
-        assert!(tab.find(unsafe { entry1.deref() }, 1, &0, &guard).is_null());
+        assert!(tab.find(unsafe { entry1.deref() }, 1, &0).is_null());
         tab.drop_bins();
     }
 
     #[test]
     fn find_node_single_match() {
-        let collector = seize::Collector::new();
-        let guard = collector.enter();
-
-        let entry = Shared::boxed(BinEntry::Node(new_node(1, 2, 3, &collector)));
-        let mut tab = Table::from(vec![Atomic::from(entry)], &collector);
+        let entry = Shared::boxed(BinEntry::Node(new_node(1, 2, 3)));
+        let mut tab = Table::from(vec![Atomic::from(entry)]);
         assert_eq!(
             // safety: we have not yet dropped entry
-            unsafe { tab.find(entry.deref(), 1, &2, &guard).deref() }
+            unsafe { tab.find(entry.deref(), 1, &2).deref() }
                 .as_node()
                 .unwrap()
                 .key,
@@ -1484,18 +1460,15 @@ mod tests {
 
     #[test]
     fn find_node_multi_match() {
-        let collector = seize::Collector::new();
-        let guard = collector.enter();
-
-        let node2 = new_node(4, 5, 6, &collector);
+        let node2 = new_node(4, 5, 6);
         let entry2 = BinEntry::Node(node2);
-        let node1 = new_node(1, 2, 3, &collector);
+        let node1 = new_node(1, 2, 3);
         node1.next.store(Shared::boxed(entry2), Ordering::SeqCst);
         let entry1 = Shared::boxed(BinEntry::Node(node1));
-        let mut tab = Table::from(vec![Atomic::from(entry1)], &collector);
+        let mut tab = Table::from(vec![Atomic::from(entry1)]);
         assert_eq!(
             // safety: we have not yet dropped entry1
-            unsafe { tab.find(entry1.deref(), 4, &5, &guard).deref() }
+            unsafe { tab.find(entry1.deref(), 4, &5).deref() }
                 .as_node()
                 .unwrap()
                 .key,
@@ -1509,13 +1482,13 @@ mod tests {
         let collector = seize::Collector::new();
         let guard = collector.enter();
 
-        let mut table = Table::<usize, usize>::new(1, &collector);
-        let table2 = Shared::boxed(Table::new(1, &collector));
+        let mut table = Table::<usize, usize>::new(1);
+        let table2 = Shared::boxed(Table::new(1));
 
-        let entry = table.get_moved(table2, &guard);
+        let entry = table.get_moved(table2);
         table.store_bin(0, entry);
         assert!(table
-            .find(&collector.link_value(BinEntry::Moved), 1, &2, &guard)
+            .find(&collector.link_value(BinEntry::Moved), 1, &2)
             .is_null());
         table.drop_bins();
         // safety: table2 is still valid and not accessed by different threads
@@ -1527,12 +1500,12 @@ mod tests {
         let collector = seize::Collector::new();
         let guard = collector.enter();
 
-        let mut table = Table::<usize, usize>::new(1, &collector);
-        let table2 = Shared::boxed(Table::new(0, &collector));
-        let entry = table.get_moved(table2, &guard);
+        let mut table = Table::<usize, usize>::new(1);
+        let table2 = Shared::boxed(Table::new(0));
+        let entry = table.get_moved(table2);
         table.store_bin(0, entry);
         assert!(table
-            .find(&collector.link_value(BinEntry::Moved), 1, &2, &guard)
+            .find(&collector.link_value(BinEntry::Moved), 1, &2)
             .is_null());
         table.drop_bins();
         // safety: table2 is still valid and not accessed by different threads
@@ -1544,21 +1517,17 @@ mod tests {
         let collector = seize::Collector::new();
         let guard = collector.enter();
 
-        let mut table = Table::<usize, usize>::new(1, &collector);
-        let table2 = Shared::boxed(Table::new(2, &collector));
-        unsafe { table2.deref() }.store_bin(
-            0,
-            Shared::boxed(BinEntry::Node(new_node(1, 2, 3, &collector))),
-        );
-        let entry = table.get_moved(table2, &guard);
+        let mut table = Table::<usize, usize>::new(1);
+        let table2 = Shared::boxed(Table::new(2));
+        unsafe { table2.deref() }.store_bin(0, Shared::boxed(BinEntry::Node(new_node(1, 2, 3))));
+        let entry = table.get_moved(table2);
         table.store_bin(0, entry);
         assert!(table
-            .find(&collector.link_value(BinEntry::Moved), 0, &1, &guard)
+            .find(&collector.link_value(BinEntry::Moved), 0, &1)
             .is_null());
         table.drop_bins();
         // safety: table2 is still valid and not accessed by different threads
         unsafe { &mut *table2.as_ptr() }.drop_bins();
-        unsafe { guard.retire_shared(table2) };
     }
 
     #[test]
@@ -1566,21 +1535,18 @@ mod tests {
         let collector = seize::Collector::new();
         let guard = collector.enter();
 
-        let mut table = Table::<usize, usize>::new(1, &collector);
-        let table2 = Shared::boxed(Table::new(1, &collector));
+        let mut table = Table::<usize, usize>::new(1);
+        let table2 = Shared::boxed(Table::new(1));
         // safety: table2 is still valid
-        unsafe { table2.deref() }.store_bin(
-            0,
-            Shared::boxed(BinEntry::Node(new_node(1, 2, 3, &collector))),
-        );
-        let entry = table.get_moved(table2, &guard);
+        unsafe { table2.deref() }.store_bin(0, Shared::boxed(BinEntry::Node(new_node(1, 2, 3))));
+        let entry = table.get_moved(table2);
         table.store_bin(0, entry);
         assert_eq!(
             // safety: entry is still valid since the table was not dropped and the
             // entry was not removed
             unsafe {
                 table
-                    .find(&collector.link_value(BinEntry::Moved), 1, &2, &guard)
+                    .find(&collector.link_value(BinEntry::Moved), 1, &2)
                     .deref()
             }
             .as_node()

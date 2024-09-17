@@ -1,8 +1,7 @@
-pub(crate) use seize::{Collector, Guard, Linked};
+pub(crate) use seize::{Collector, Guard};
 
 use std::gc::Gc;
 use std::marker::PhantomData;
-use std::ops::Deref;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::{fmt, ptr};
 

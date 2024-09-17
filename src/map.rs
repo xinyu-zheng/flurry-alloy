@@ -1,5 +1,3 @@
-use seize::Linked;
-
 use crate::iter::*;
 use crate::node::*;
 use crate::raw::*;
@@ -387,8 +385,7 @@ impl<K, V, S> HashMap<K, V, S> {
 
     #[cfg(test)]
     /// Returns the capacity of the map.
-    fn capacity(&self, guard: &Guard<'_>) -> usize {
-        self.check_guard(guard);
+    fn capacity(&self) -> usize {
         let table = self.table.load(Ordering::Relaxed);
 
         if table.is_null() {
@@ -409,34 +406,31 @@ impl<K, V, S> HashMap<K, V, S> {
     /// An iterator visiting all key-value pairs in arbitrary order.
     ///
     /// The iterator element type is `(&'g K, &'g V)`.
-    pub fn iter<'g>(&'g self, guard: &'g Guard<'_>) -> Iter<'g, K, V> {
-        self.check_guard(guard);
+    pub fn iter<'g>(&'g self) -> Iter<'g, K, V> {
         let table = self.table.load(Ordering::SeqCst);
-        let node_iter = NodeIter::new(table, guard);
-        Iter { node_iter, guard }
+        let node_iter = NodeIter::new(table);
+        Iter { node_iter }
     }
 
     /// An iterator visiting all keys in arbitrary order.
     ///
     /// The iterator element type is `&'g K`.
-    pub fn keys<'g>(&'g self, guard: &'g Guard<'_>) -> Keys<'g, K, V> {
-        self.check_guard(guard);
+    pub fn keys<'g>(&'g self) -> Keys<'g, K, V> {
         let table = self.table.load(Ordering::SeqCst);
-        let node_iter = NodeIter::new(table, guard);
+        let node_iter = NodeIter::new(table);
         Keys { node_iter }
     }
 
     /// An iterator visiting all values in arbitrary order.
     ///
     /// The iterator element type is `&'g V`.
-    pub fn values<'g>(&'g self, guard: &'g Guard<'_>) -> Values<'g, K, V> {
-        self.check_guard(guard);
+    pub fn values<'g>(&'g self) -> Values<'g, K, V> {
         let table = self.table.load(Ordering::SeqCst);
-        let node_iter = NodeIter::new(table, guard);
-        Values { node_iter, guard }
+        let node_iter = NodeIter::new(table);
+        Values { node_iter }
     }
 
-    fn init_table<'g>(&'g self, guard: &'g Guard<'_>) -> Shared<'g, Table<K, V>> {
+    fn init_table<'g>(&'g self) -> Shared<'g, Table<K, V>> {
         loop {
             let table = self.table.load(Ordering::SeqCst);
             // safety: we loaded the table while the thread was marked as active.
@@ -468,7 +462,7 @@ impl<K, V, S> HashMap<K, V, S> {
                     } else {
                         DEFAULT_CAPACITY
                     };
-                    table = Shared::boxed(Table::new(n, &self.collector));
+                    table = Shared::boxed(Table::new(n));
                     self.table.store(table, Ordering::SeqCst);
                     sc = load_factor!(n as isize)
                 }
@@ -483,10 +477,6 @@ impl<K, V, S> HashMap<K, V, S> {
         // NOTE: this is a stripped-down version of try_presize for use only when we _know_ that
         // the table is new, and that therefore we won't have to help out with transfers or deal
         // with contending initializations.
-
-        // safety: we are creating this map, so no other thread can access it,
-        // while we are initializing it.
-        let guard = unsafe { Guard::unprotected() };
 
         let requested_capacity = if size >= MAXIMUM_CAPACITY / 2 {
             MAXIMUM_CAPACITY
@@ -506,7 +496,7 @@ impl<K, V, S> HashMap<K, V, S> {
         // with as many bins as were requested
 
         // create a table with `new_capacity` empty bins
-        let new_table = Shared::boxed(Table::new(requested_capacity, &self.collector));
+        let new_table = Shared::boxed(Table::new(requested_capacity));
 
         // store the new table to `self.table`
         self.table.store(new_table, Ordering::SeqCst);
@@ -533,7 +523,7 @@ where
     K: Clone + Ord,
 {
     /// Tries to presize table to accommodate the given number of elements.
-    fn try_presize(&self, size: usize, guard: &Guard<'_>) {
+    fn try_presize(&self, size: usize) {
         let requested_capacity = if size >= MAXIMUM_CAPACITY / 2 {
             MAXIMUM_CAPACITY
         } else {
@@ -592,7 +582,7 @@ where
                 }
 
                 // create a table with `new_capacity` empty bins
-                let new_table = Shared::boxed(Table::new(new_capacity, &self.collector));
+                let new_table = Shared::boxed(Table::new(new_capacity));
 
                 // store the new table to `self.table`
                 let old_table = self.table.swap(new_table, Ordering::SeqCst);
@@ -636,7 +626,7 @@ where
                 {
                     // someone else already started to resize the table
                     // TODO: can we `self.help_transfer`?
-                    self.transfer(table, Shared::null(), guard);
+                    self.transfer(table, Shared::null());
                 }
             }
         }
@@ -649,7 +639,6 @@ where
         &'g self,
         table: Shared<'g, Table<K, V>>,
         mut next_table_ptr: Shared<'g, Table<K, V>>,
-        guard: &'g Guard<'_>,
     ) {
         // safety: table was read while `guard` was held. the code that drops table only drops it
         // after it is no longer reachable, and any outstanding references are no longer active.
@@ -663,7 +652,7 @@ where
 
         if next_table_ptr.is_null() {
             // we are initiating a resize
-            let table = Shared::boxed(Table::new(n << 1, &self.collector));
+            let table = Shared::boxed(Table::new(n << 1));
             let now_garbage = self.next_table.swap(table, Ordering::SeqCst);
             assert!(now_garbage.is_null());
             self.transfer_index.store(n as isize, Ordering::SeqCst);
@@ -777,15 +766,10 @@ where
             // the target of these references won't be dropped while the guard remains active.
             let table = unsafe { table.deref() };
 
-            let bin = table.bin(i, guard);
+            let bin = table.bin(i);
             if bin.is_null() {
                 advance = table
-                    .cas_bin(
-                        i,
-                        Shared::null(),
-                        table.get_moved(next_table_ptr, guard),
-                        guard,
-                    )
+                    .cas_bin(i, Shared::null(), table.get_moved(next_table_ptr))
                     .is_ok();
                 continue;
             }
@@ -818,7 +802,7 @@ where
                     let head_lock = head.lock.lock();
 
                     // need to check that this is _still_ the head
-                    let current_head = table.bin(i, guard);
+                    let current_head = table.bin(i);
                     if current_head != bin {
                         // nope -- try again from the start
                         continue;
@@ -898,7 +882,7 @@ where
 
                     next_table.store_bin(i, low_bin);
                     next_table.store_bin(i + n, high_bin);
-                    table.store_bin(i, table.get_moved(next_table_ptr, guard));
+                    table.store_bin(i, table.get_moved(next_table_ptr));
 
                     // everything up to last_run in the _old_ bin linked list is now garbage.
                     // those nodes have all been re-allocated in the new bin linked list.
@@ -929,7 +913,7 @@ where
                     let bin_lock = tree_bin.lock.lock();
 
                     // need to check that this is _still_ the correct bin
-                    let current_head = table.bin(i, guard);
+                    let current_head = table.bin(i);
                     if current_head != bin {
                         // nope -- try again from the start
                         continue;
@@ -1000,10 +984,10 @@ where
                         // bin is too small. since the tree nodes are
                         // already behind shared references, we have to
                         // clean them up manually.
-                        let low_linear = self.untreeify(low, guard);
+                        let low_linear = self.untreeify(low);
                         // safety: we have just created `low` and its `next`
                         // nodes and have never shared them
-                        unsafe { TreeBin::drop_tree_nodes(low, false, guard) };
+                        unsafe { TreeBin::drop_tree_nodes(low, false) };
                         low_linear
                     } else if high_count != 0 {
                         // the new bin will also be a tree bin. if both the high
@@ -1011,7 +995,7 @@ where
                         // allocate a new TreeBin.
                         // safety: we have just created `low` and its `next` nodes using `Shared::boxed`
                         // and have never shared them
-                        let low_bin = unsafe { BinEntry::Tree(TreeBin::new(low, guard)) };
+                        let low_bin = unsafe { BinEntry::Tree(TreeBin::new(low)) };
 
                         Shared::boxed(low_bin)
                     } else {
@@ -1023,19 +1007,19 @@ where
                         // we need to clean them up.
                         // safety: we have just created `low` and its `next`
                         // nodes and have never shared them
-                        unsafe { TreeBin::drop_tree_nodes(low, false, guard) };
+                        unsafe { TreeBin::drop_tree_nodes(low, false) };
                         bin
                     };
                     let high_bin = if high_count <= UNTREEIFY_THRESHOLD {
-                        let high_linear = self.untreeify(high, guard);
+                        let high_linear = self.untreeify(high);
                         // safety: we have just created `high` and its `next`
                         // nodes and have never shared them
-                        unsafe { TreeBin::drop_tree_nodes(high, false, guard) };
+                        unsafe { TreeBin::drop_tree_nodes(high, false) };
                         high_linear
                     } else if low_count != 0 {
                         // safety: we have just created `high` and its `next` nodes using `Shared::boxed`
                         // and have never shared them
-                        let high_bin = unsafe { BinEntry::Tree(TreeBin::new(high, guard)) };
+                        let high_bin = unsafe { BinEntry::Tree(TreeBin::new(high)) };
 
                         Shared::boxed(high_bin)
                     } else {
@@ -1044,13 +1028,13 @@ where
                         // we need to clean them up.
                         // safety: we have just created `high` and its `next`
                         // nodes and have never shared them
-                        unsafe { TreeBin::drop_tree_nodes(high, false, guard) };
+                        unsafe { TreeBin::drop_tree_nodes(high, false) };
                         bin
                     };
 
                     next_table.store_bin(i, low_bin);
                     next_table.store_bin(i + n, high_bin);
-                    table.store_bin(i, table.get_moved(next_table_ptr, guard));
+                    table.store_bin(i, table.get_moved(next_table_ptr));
 
                     // if we did not re-use the old bin, it is now garbage,
                     // since all of its nodes have been reallocated. However,
@@ -1062,7 +1046,7 @@ where
                         // dropping the old bin if it was not used in
                         // `next_table` so there is no other reference to it
                         // anyone could obtain.
-                        unsafe { TreeBin::defer_drop_without_values(bin, guard) };
+                        unsafe { TreeBin::defer_drop_without_values(bin) };
                     }
 
                     advance = true;
@@ -1075,11 +1059,7 @@ where
         }
     }
 
-    fn help_transfer<'g>(
-        &'g self,
-        table: Shared<'g, Table<K, V>>,
-        guard: &'g Guard<'_>,
-    ) -> Shared<'g, Table<K, V>> {
+    fn help_transfer<'g>(&'g self, table: Shared<'g, Table<K, V>>) -> Shared<'g, Table<K, V>> {
         if table.is_null() {
             return table;
         }
@@ -1089,7 +1069,7 @@ where
         // retiring the table must have seen us as active and included us
         // in the reference count. therefore our reference is valid until
         // we decrement the reference count (i.e drop our guard).
-        let next_table = unsafe { table.deref() }.next_table(guard);
+        let next_table = unsafe { table.deref() }.next_table();
         if next_table.is_null() {
             return table;
         }
@@ -1114,14 +1094,14 @@ where
                 .compare_exchange(sc, sc + 1, Ordering::SeqCst, Ordering::Relaxed)
                 .is_ok()
             {
-                self.transfer(table, next_table, guard);
+                self.transfer(table, next_table);
                 break;
             }
         }
         next_table
     }
 
-    fn add_count(&self, n: isize, resize_hint: Option<usize>, guard: &Guard<'_>) {
+    fn add_count(&self, n: isize, resize_hint: Option<usize>) {
         // TODO: implement the Java CounterCell business here
 
         use std::cmp;
@@ -1184,7 +1164,7 @@ where
                     .compare_exchange(sc, sc + 1, Ordering::SeqCst, Ordering::Relaxed)
                     .is_ok()
                 {
-                    self.transfer(table, nt, guard);
+                    self.transfer(table, nt);
                 }
             } else if self
                 .size_ctl
@@ -1194,7 +1174,7 @@ where
                 // a resize is needed, but has not yet started
                 // TODO: figure out why this is rs + 2, not just rs
                 // NOTE: this also applies to `try_presize`
-                self.transfer(table, Shared::null(), guard);
+                self.transfer(table, Shared::null());
             }
 
             // another resize may be needed!
@@ -1221,10 +1201,9 @@ where
     ///
     /// Reserving does not panic in flurry. If the new size is invalid, no
     /// reallocation takes place.
-    pub fn reserve(&self, additional: usize, guard: &Guard<'_>) {
-        self.check_guard(guard);
+    pub fn reserve(&self, additional: usize) {
         let absolute = self.len() + additional;
-        self.try_presize(absolute, guard);
+        self.try_presize(absolute);
     }
 }
 
@@ -1243,7 +1222,7 @@ where
         self.build_hasher.hash_one(key)
     }
 
-    fn get_node<'g, Q>(&'g self, key: &Q, guard: &'g Guard<'_>) -> Option<&'g Node<K, V>>
+    fn get_node<'g, Q>(&'g self, key: &Q) -> Option<&'g Node<K, V>>
     where
         K: Borrow<Q>,
         Q: ?Sized + Hash + Ord,
@@ -1263,7 +1242,7 @@ where
 
         let h = self.hash(key);
         let bini = table.bini(h);
-        let bin = table.bin(bini, guard);
+        let bin = table.bin(bini);
         if bin.is_null() {
             return None;
         }
@@ -1284,7 +1263,7 @@ where
         // swap happened, it must have happened _after_ we read. since we did the read while
         // the current thread was marked as active, we must be included in the reference count,
         // and the drop must happen _after_ we decrement the count (i.e drop our guard).
-        let node = table.find(unsafe { bin.deref() }, h, key, guard);
+        let node = table.find(unsafe { bin.deref() }, h, key);
         if node.is_null() {
             return None;
         }
@@ -1320,13 +1299,12 @@ where
     /// assert_eq!(mref.contains_key(&1), true);
     /// assert_eq!(mref.contains_key(&2), false);
     /// ```
-    pub fn contains_key<Q>(&self, key: &Q, guard: &Guard<'_>) -> bool
+    pub fn contains_key<Q>(&self, key: &Q) -> bool
     where
         K: Borrow<Q>,
         Q: ?Sized + Hash + Ord,
     {
-        self.check_guard(guard);
-        self.get(key, guard).is_some()
+        self.get(key).is_some()
     }
 
     /// Returns a reference to the value corresponding to the key.
@@ -1352,13 +1330,12 @@ where
     /// assert_eq!(mref.get(&2), None);
     /// ```
     #[inline]
-    pub fn get<'g, Q>(&'g self, key: &Q, guard: &'g Guard<'_>) -> Option<&'g V>
+    pub fn get<'g, Q>(&'g self, key: &Q) -> Option<&'g V>
     where
         K: Borrow<Q>,
         Q: ?Sized + Hash + Ord,
     {
-        self.check_guard(guard);
-        let node = self.get_node(key, guard)?;
+        let node = self.get_node(key)?;
 
         let v = node.value.load(Ordering::SeqCst);
         assert!(!v.is_null());
@@ -1379,13 +1356,12 @@ where
     /// [`Ord`]: std::cmp::Ord
     /// [`Hash`]: std::hash::Hash
     #[inline]
-    pub fn get_key_value<'g, Q>(&'g self, key: &Q, guard: &'g Guard<'_>) -> Option<(&'g K, &'g V)>
+    pub fn get_key_value<'g, Q>(&'g self, key: &Q) -> Option<(&'g K, &'g V)>
     where
         K: Borrow<Q>,
         Q: ?Sized + Hash + Ord,
     {
-        self.check_guard(guard);
-        let node = self.get_node(key, guard)?;
+        let node = self.get_node(key)?;
 
         let v = node.value.load(Ordering::SeqCst);
         assert!(!v.is_null());
@@ -1395,12 +1371,7 @@ where
         unsafe { v.as_ref() }.map(|v| (&node.key, &**v))
     }
 
-    pub(crate) fn guarded_eq(
-        &self,
-        other: &Self,
-        our_guard: &Guard<'_>,
-        their_guard: &Guard<'_>,
-    ) -> bool
+    pub(crate) fn guarded_eq(&self, other: &Self) -> bool
     where
         V: PartialEq,
     {
@@ -1408,8 +1379,8 @@ where
             return false;
         }
 
-        self.iter(our_guard)
-            .all(|(key, value)| other.get(key, their_guard).map_or(false, |v| *value == *v))
+        self.iter()
+            .all(|(key, value)| other.get(key).map_or(false, |v| *value == *v))
     }
 }
 
@@ -1435,7 +1406,7 @@ where
     /// map.pin().clear();
     /// assert!(map.pin().is_empty());
     /// ```
-    pub fn clear(&self, guard: &Guard<'_>) {
+    pub fn clear(&self) {
         // Negative number of deletions
         let mut delta = 0;
         let mut idx = 0usize;
@@ -1444,7 +1415,7 @@ where
         // Safety: self.table is a valid pointer because we checked it above.
         while !table.is_null() && idx < unsafe { table.deref() }.len() {
             let tab = unsafe { table.deref() };
-            let raw_node = tab.bin(idx, guard);
+            let raw_node = tab.bin(idx);
             if raw_node.is_null() {
                 idx += 1;
                 continue;
@@ -1453,14 +1424,14 @@ where
             // it in the above if stmt.
             match **unsafe { raw_node.deref() } {
                 BinEntry::Moved => {
-                    table = self.help_transfer(table, guard);
+                    table = self.help_transfer(table);
                     // start from the first bin again in the new table
                     idx = 0;
                 }
                 BinEntry::Node(ref node) => {
                     let head_lock = node.lock.lock();
                     // need to check that this is _still_ the head
-                    let current_head = tab.bin(idx, guard);
+                    let current_head = tab.bin(idx);
                     if current_head != raw_node {
                         // nope -- try the bin again
                         continue;
@@ -1508,7 +1479,7 @@ where
                 BinEntry::Tree(ref tree_bin) => {
                     let bin_lock = tree_bin.lock.lock();
                     // need to check that this is _still_ the correct bin
-                    let current_head = tab.bin(idx, guard);
+                    let current_head = tab.bin(idx);
                     if current_head != raw_node {
                         // nope -- try the bin again
                         continue;
@@ -1550,7 +1521,7 @@ where
         }
 
         if delta != 0 {
-            self.add_count(delta, None, guard);
+            self.add_count(delta, None);
         }
     }
 }
@@ -1593,9 +1564,8 @@ where
     /// assert_eq!(mref.insert(37, "c"), Some(&"b"));
     /// assert_eq!(mref.get(&37), Some(&"c"));
     /// ```
-    pub fn insert<'g>(&'g self, key: K, value: V, guard: &'g Guard<'_>) -> Option<&'g V> {
-        self.check_guard(guard);
-        self.put(key, value, false, guard).before()
+    pub fn insert<'g>(&'g self, key: K, value: V) -> Option<&'g V> {
+        self.put(key, value, false).before()
     }
 
     /// Inserts a key-value pair into the map unless the key already exists.
@@ -1632,7 +1602,7 @@ where
         value: V,
         guard: &'g Guard<'_>,
     ) -> Result<&'g V, TryInsertError<'g, V>> {
-        match self.put(key, value, true, guard) {
+        match self.put(key, value, true) {
             PutResult::Exists {
                 current,
                 not_inserted,
@@ -1648,13 +1618,7 @@ where
         }
     }
 
-    fn put<'g>(
-        &'g self,
-        mut key: K,
-        value: V,
-        no_replacement: bool,
-        guard: &'g Guard<'_>,
-    ) -> PutResult<'g, V> {
+    fn put<'g>(&'g self, mut key: K, value: V, no_replacement: bool) -> PutResult<'g, V> {
         let hash = self.hash(&key);
         let mut table = self.table.load(Ordering::SeqCst);
         let mut bin_count;
@@ -1663,7 +1627,7 @@ where
         loop {
             // safety: see argument below for !is_null case
             if table.is_null() || unsafe { table.deref() }.is_empty() {
-                table = self.init_table(guard);
+                table = self.init_table();
                 continue;
             }
 
@@ -1686,13 +1650,13 @@ where
             let t = unsafe { table.deref() };
 
             let bini = t.bini(hash);
-            let mut bin = t.bin(bini, guard);
+            let mut bin = t.bin(bini);
             if bin.is_null() {
                 // fast path -- bin is empty so stick us at the front
                 let node = Shared::boxed(BinEntry::Node(Node::new(hash, key, value)));
-                match t.cas_bin(bini, bin, node, guard) {
+                match t.cas_bin(bini, bin, node) {
                     Ok(_old_null_ptr) => {
-                        self.add_count(1, Some(0), guard);
+                        self.add_count(1, Some(0));
                         // safety: we have not moved the node's value since we placed it into
                         // its `Atomic` in the very beginning of the method, so the ref is still
                         // valid. since the value is not currently marked as garbage, and since
@@ -1735,7 +1699,7 @@ where
             // and the drop must happen _after_ we decrement the count (i.e drop our guard).
             match **unsafe { bin.deref() } {
                 BinEntry::Moved => {
-                    table = self.help_transfer(table, guard);
+                    table = self.help_transfer(table);
                     continue;
                 }
                 BinEntry::Node(ref head)
@@ -1757,7 +1721,7 @@ where
                     let head_lock = head.lock.lock();
 
                     // need to check that this is _still_ the head
-                    let current_head = t.bin(bini, guard);
+                    let current_head = t.bin(bini);
                     if current_head != bin {
                         // nope -- try again from the start
                         continue;
@@ -1843,7 +1807,7 @@ where
                     let head_lock = tree_bin.lock.lock();
 
                     // need to check that this is _still_ the correct bin
-                    let current_head = t.bin(bini, guard);
+                    let current_head = t.bin(bini);
                     if current_head != bin {
                         // nope -- try again from the start
                         continue;
@@ -1855,7 +1819,7 @@ where
                     // we don't actually count bins, just set this low enough
                     // that we don't try to treeify the bin later
                     bin_count = 2;
-                    let p = tree_bin.find_or_put_tree_val(hash, key, value, guard, &self.collector);
+                    let p = tree_bin.find_or_put_tree_val(hash, key, value);
                     if p.is_null() {
                         // no TreeNode was returned, so the key did not previously exist in the
                         // TreeBin. This means it was successfully put there by the call above
@@ -1921,7 +1885,7 @@ where
             // _cannot_ be 0 at this point.
             debug_assert_ne!(bin_count, 0);
             if bin_count >= TREEIFY_THRESHOLD {
-                self.treeify_bin(t, bini, guard);
+                self.treeify_bin(t, bini);
             }
             if let Some(old_val) = old_val {
                 return PutResult::Replaced {
@@ -1938,7 +1902,7 @@ where
         }
         // increment count, since we only get here if we did not return an old (updated) value
         debug_assert!(old_val.is_none());
-        self.add_count(1, Some(bin_count), guard);
+        self.add_count(1, Some(bin_count));
         PutResult::Inserted {
             // safety: we have not moved the node's value since we placed it into
             // its `Atomic` in the very beginning of the method, so the ref is still
@@ -1949,9 +1913,9 @@ where
         }
     }
 
-    fn put_all<I: Iterator<Item = (K, V)>>(&self, iter: I, guard: &Guard<'_>) {
+    fn put_all<I: Iterator<Item = (K, V)>>(&self, iter: I) {
         for (key, value) in iter {
-            self.put(key, value, false, guard);
+            self.put(key, value, false);
         }
     }
 
@@ -1976,18 +1940,12 @@ where
     ///
     /// [`Ord`]: std::cmp::Ord
     /// [`Hash`]: std::hash::Hash
-    pub fn compute_if_present<'g, Q, F>(
-        &'g self,
-        key: &Q,
-        remapping_function: F,
-        guard: &'g Guard<'_>,
-    ) -> Option<&'g V>
+    pub fn compute_if_present<'g, Q, F>(&'g self, key: &Q, remapping_function: F) -> Option<&'g V>
     where
         K: Borrow<Q>,
         Q: ?Sized + Hash + Ord,
         F: FnOnce(&K, &V) -> Option<V>,
     {
-        self.check_guard(guard);
         let hash = self.hash(&key);
 
         let mut table = self.table.load(Ordering::SeqCst);
@@ -1997,7 +1955,7 @@ where
         loop {
             // safety: see argument below for !is_null case
             if table.is_null() || unsafe { table.deref() }.is_empty() {
-                table = self.init_table(guard);
+                table = self.init_table();
                 continue;
             }
 
@@ -2020,7 +1978,7 @@ where
             let t = unsafe { table.deref() };
 
             let bini = t.bini(hash);
-            let bin = t.bin(bini, guard);
+            let bin = t.bin(bini);
             if bin.is_null() {
                 // fast path -- bin is empty so key is not present
                 return None;
@@ -2046,7 +2004,7 @@ where
             // and the drop must happen _after_ we decrement the count (i.e drop our guard).
             match **unsafe { bin.deref() } {
                 BinEntry::Moved => {
-                    table = self.help_transfer(table, guard);
+                    table = self.help_transfer(table);
                     continue;
                 }
                 BinEntry::Node(ref head) => {
@@ -2054,7 +2012,7 @@ where
                     let head_lock = head.lock.lock();
 
                     // need to check that this is _still_ the head
-                    let current_head = t.bin(bini, guard);
+                    let current_head = t.bin(bini);
                     if current_head != bin {
                         // nope -- try again from the start
                         continue;
@@ -2170,7 +2128,7 @@ where
                     let bin_lock = tree_bin.lock.lock();
 
                     // need to check that this is _still_ the head
-                    let current_head = t.bin(bini, guard);
+                    let current_head = t.bin(bini);
                     if current_head != bin {
                         // nope -- try again from the start
                         continue;
@@ -2189,7 +2147,7 @@ where
                         break;
                     }
                     new_val = {
-                        let p = TreeNode::find_tree_node(root, hash, key, guard);
+                        let p = TreeNode::find_tree_node(root, hash, key);
                         if p.is_null() {
                             // the given key is not present in the map
                             None
@@ -2246,12 +2204,11 @@ where
                                 // directly, or we will `need_to_untreeify`. In the latter case, we `defer_destroy`
                                 // both `p` and its value below, after storing the linear bin. Thus, everything is
                                 // always marked for garbage collection _after_ it becomes unaccessible by other threads.
-                                let need_to_untreeify = unsafe {
-                                    tree_bin.remove_tree_node(p, true, guard, &self.collector)
-                                };
+                                let need_to_untreeify =
+                                    unsafe { tree_bin.remove_tree_node(p, true) };
                                 if need_to_untreeify {
-                                    let linear_bin = self
-                                        .untreeify(tree_bin.first.load(Ordering::SeqCst), guard);
+                                    let linear_bin =
+                                        self.untreeify(tree_bin.first.load(Ordering::SeqCst));
                                     t.store_bin(bini, linear_bin);
                                     // the old bin is now garbage, but its values are not,
                                     // since they are re-used in the linear bin.
@@ -2266,7 +2223,7 @@ where
                                     // with `bin` here since `remove_tree_node` indicated that the bin needs to
                                     // be untreeified.
                                     unsafe {
-                                        TreeBin::defer_drop_without_values(bin, guard);
+                                        TreeBin::defer_drop_without_values(bin);
                                     }
                                 }
                                 None
@@ -2289,7 +2246,7 @@ where
         }
         if removed_node {
             // decrement count
-            self.add_count(-1, Some(bin_count), guard);
+            self.add_count(-1, Some(bin_count));
         }
         new_val.map(|linked| &**linked)
     }
@@ -2313,7 +2270,7 @@ where
     /// assert_eq!(map.pin().remove(&1), Some(&"a"));
     /// assert_eq!(map.pin().remove(&1), None);
     /// ```
-    pub fn remove<'g, Q>(&'g self, key: &Q, guard: &'g Guard<'_>) -> Option<&'g V>
+    pub fn remove<'g, Q>(&'g self, key: &Q) -> Option<&'g V>
     where
         K: Borrow<Q>,
         Q: ?Sized + Hash + Ord,
@@ -2321,8 +2278,7 @@ where
         // NOTE: _technically_, this method shouldn't require the thread-safety bounds, but a) that
         // would require special-casing replace_node for when new_value.is_none(), and b) it's sort
         // of useless to call remove on a collection that you know you can never insert into.
-        self.check_guard(guard);
-        self.replace_node(key, None, None, guard).map(|(_, v)| v)
+        self.replace_node(key, None, None).map(|(_, v)| v)
     }
 
     /// Removes a key from the map, returning the stored key and value if the
@@ -2346,13 +2302,12 @@ where
     /// assert_eq!(map.remove_entry(&1, &guard), Some((&1, &"a")));
     /// assert_eq!(map.remove(&1, &guard), None);
     /// ```
-    pub fn remove_entry<'g, Q>(&'g self, key: &Q, guard: &'g Guard<'_>) -> Option<(&'g K, &'g V)>
+    pub fn remove_entry<'g, Q>(&'g self, key: &Q) -> Option<(&'g K, &'g V)>
     where
         K: Borrow<Q>,
         Q: ?Sized + Hash + Ord,
     {
-        self.check_guard(guard);
-        self.replace_node(key, None, None, guard)
+        self.replace_node(key, None, None)
     }
 
     /// Replaces node value with `new_value`.
@@ -2377,7 +2332,6 @@ where
         key: &Q,
         new_value: Option<V>,
         observed_value: Option<Shared<'g, V>>,
-        guard: &'g Guard<'_>,
     ) -> Option<(&'g K, &'g V)>
     where
         K: Borrow<Q>,
@@ -2411,7 +2365,7 @@ where
                 break;
             }
             let bini = t.bini(hash);
-            let bin = t.bin(bini, guard);
+            let bin = t.bin(bini);
             if bin.is_null() {
                 break;
             }
@@ -2434,14 +2388,14 @@ where
             // and the drop must happen _after_ we decrement the count (i.e drop our guard).
             match **unsafe { bin.deref() } {
                 BinEntry::Moved => {
-                    table = self.help_transfer(table, guard);
+                    table = self.help_transfer(table);
                     continue;
                 }
                 BinEntry::Node(ref head) => {
                     let head_lock = head.lock.lock();
 
                     // need to check that this is _still_ the head
-                    if t.bin(bini, guard) != bin {
+                    if t.bin(bini) != bin {
                         continue;
                     }
 
@@ -2506,7 +2460,7 @@ where
                     let bin_lock = tree_bin.lock.lock();
 
                     // need to check that this is _still_ the head
-                    if t.bin(bini, guard) != bin {
+                    if t.bin(bini) != bin {
                         continue;
                     }
 
@@ -2522,7 +2476,7 @@ where
                         // this with an assertion instead.
                         break;
                     }
-                    let p = TreeNode::find_tree_node(root, hash, key, guard);
+                    let p = TreeNode::find_tree_node(root, hash, key);
                     if p.is_null() {
                         // similarly to the above, there now are entries in this bin, but none of
                         // them matches the given key
@@ -2552,18 +2506,16 @@ where
                             // after storing the linear bin. The value stored in `p` is `defer_destroy`ed from within
                             // `old_val` at the end of the method. Thus, everything is always marked for garbage
                             // collection _after_ it becomes unaccessible by other threads.
-                            let need_to_untreeify = unsafe {
-                                tree_bin.remove_tree_node(p, false, guard, &self.collector)
-                            };
+                            let need_to_untreeify = unsafe { tree_bin.remove_tree_node(p, false) };
                             if need_to_untreeify {
                                 let linear_bin =
-                                    self.untreeify(tree_bin.first.load(Ordering::SeqCst), guard);
+                                    self.untreeify(tree_bin.first.load(Ordering::SeqCst));
                                 t.store_bin(bini, linear_bin);
                                 // the old bin is now garbage, but its values are not,
                                 // since they get re-used in the linear bin
                                 // safety: same as in put
                                 unsafe {
-                                    TreeBin::defer_drop_without_values(bin, guard);
+                                    TreeBin::defer_drop_without_values(bin);
                                 }
                             }
                         }
@@ -2577,7 +2529,7 @@ where
             }
             if let Some((key, val)) = old_val {
                 if is_remove {
-                    self.add_count(-1, None, guard);
+                    self.add_count(-1, None);
                 }
 
                 // safety: need to guarantee that the old value is no longer
@@ -2633,17 +2585,16 @@ where
     /// If `f` returns `false` for a given key/value pair, but the value for that pair is concurrently
     /// modified before the removal takes place, the entry will not be removed.
     /// If you want the removal to happen even in the case of concurrent modification, use [`HashMap::retain_force`].
-    pub fn retain<F>(&self, mut f: F, guard: &Guard<'_>)
+    pub fn retain<F>(&self, mut f: F)
     where
         F: FnMut(&K, &V) -> bool,
     {
-        self.check_guard(guard);
-        let mut iter = self.iter(guard);
+        let mut iter = self.iter();
         while let Some((k, v)) = iter.next_internal() {
             // safety: flurry does not drop or move until after guard drop
             let value = unsafe { v.deref() };
             if !f(k, value) {
-                self.replace_node(k, None, Some(v), guard);
+                self.replace_node(k, None, Some(v));
             }
         }
     }
@@ -2668,15 +2619,14 @@ where
     /// map.pin().retain_force(|&k, _| k % 2 == 0);
     /// assert_eq!(map.pin().len(), 4);
     /// ```
-    pub fn retain_force<F>(&self, mut f: F, guard: &Guard<'_>)
+    pub fn retain_force<F>(&self, mut f: F)
     where
         F: FnMut(&K, &V) -> bool,
     {
-        self.check_guard(guard);
         // removed selected keys
-        for (k, v) in self.iter(guard) {
+        for (k, v) in self.iter() {
             if !f(k, v) {
-                self.replace_node(k, None, None, guard);
+                self.replace_node(k, None, None);
             }
         }
     }
@@ -2688,12 +2638,12 @@ where
 {
     /// Replaces all linked nodes in the bin at the given index unless the table
     /// is too small, in which case a resize is initiated instead.
-    fn treeify_bin<'g>(&'g self, tab: &Table<K, V>, index: usize, guard: &'g Guard<'_>) {
+    fn treeify_bin<'g>(&'g self, tab: &Table<K, V>, index: usize) {
         let n = tab.len();
         if n < MIN_TREEIFY_CAPACITY {
-            self.try_presize(n << 1, guard);
+            self.try_presize(n << 1);
         } else {
-            let bin = tab.bin(index, guard);
+            let bin = tab.bin(index);
             if bin.is_null() {
                 return;
             }
@@ -2704,7 +2654,7 @@ where
                 BinEntry::Node(ref node) => {
                     let lock = node.lock.lock();
                     // check if `bin` is still the head
-                    if tab.bin(index, guard) != bin {
+                    if tab.bin(index) != bin {
                         return;
                     }
                     let mut e = bin;
@@ -2750,7 +2700,7 @@ where
 
                     // safety: we have just created `head` and its `next` nodes using `Shared::boxed`
                     // and have never shared them
-                    let head_bin = unsafe { BinEntry::Tree(TreeBin::new(head, guard)) };
+                    let head_bin = unsafe { BinEntry::Tree(TreeBin::new(head)) };
                     tab.store_bin(index, Shared::boxed(head_bin));
                     drop(lock);
                     // make sure the old bin entries get dropped
@@ -2817,11 +2767,7 @@ where
 
     /// Returns a list of non-TreeNodes replacing those in the given list. Does
     /// _not_ clean up old TreeNodes, as they may still be reachable.
-    fn untreeify<'g>(
-        &self,
-        bin: Shared<'g, BinEntry<K, V>>,
-        guard: &'g Guard<'_>,
-    ) -> Shared<'g, BinEntry<K, V>> {
+    fn untreeify<'g>(&self, bin: Shared<'g, BinEntry<K, V>>) -> Shared<'g, BinEntry<K, V>> {
         let mut head = Shared::null();
         let mut tail: Shared<'_, BinEntry<K, V>> = Shared::null();
         let mut q = bin;
@@ -2869,7 +2815,7 @@ where
         if self.len() != other.len() {
             return false;
         }
-        self.guarded_eq(other, &self.guard(), &other.guard())
+        self.guarded_eq(other)
     }
 }
 
@@ -2887,8 +2833,7 @@ where
     V: Debug,
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let guard = self.collector.enter();
-        f.debug_map().entries(self.iter(&guard)).finish()
+        f.debug_map().entries(self.iter()).finish()
     }
 }
 
@@ -2935,9 +2880,8 @@ where
             (iter.size_hint().0 + 1) / 2
         };
 
-        let guard = self.collector.enter();
-        self.reserve(reserve, &guard);
-        (*self).put_all(iter, &guard);
+        self.reserve(reserve);
+        (*self).put_all(iter);
     }
 }
 
@@ -2962,15 +2906,11 @@ where
         let mut iter = iter.into_iter();
 
         if let Some((key, value)) = iter.next() {
-            // safety: we own `map`, so it's not concurrently accessed by
-            // anyone else at this point.
-            let guard = unsafe { Guard::unprotected() };
-
             let (lower, _) = iter.size_hint();
             let map = HashMap::with_capacity_and_hasher(lower.saturating_add(1), S::default());
 
-            map.put(key, value, false, &guard);
-            map.put_all(iter, &guard);
+            map.put(key, value, false);
+            map.put_all(iter);
             map
         } else {
             Self::default()
@@ -3011,10 +2951,8 @@ where
             .with_collector(self.collector.clone());
 
         {
-            let guard = self.collector.enter();
-            let cloned_guard = cloned_map.collector.enter();
-            for (k, v) in self.iter(&guard) {
-                cloned_map.insert(k.clone(), v.clone(), &cloned_guard);
+            for (k, v) in self.iter() {
+                cloned_map.insert(k.clone(), v.clone());
             }
         }
         cloned_map
@@ -3038,21 +2976,20 @@ const fn num_cpus() -> usize {
 #[test]
 fn capacity() {
     let map = HashMap::<usize, usize>::new();
-    let guard = map.guard();
 
-    assert_eq!(map.capacity(&guard), 0);
+    assert_eq!(map.capacity(), 0);
     // The table has not yet been allocated
 
-    map.insert(42, 0, &guard);
+    map.insert(42, 0);
 
-    assert_eq!(map.capacity(&guard), 16);
+    assert_eq!(map.capacity(), 16);
     // The table has been allocated and has default capacity
 
     for i in 0..16 {
-        map.insert(i, 42, &guard);
+        map.insert(i, 42);
     }
 
-    assert_eq!(map.capacity(&guard), 32);
+    assert_eq!(map.capacity(), 32);
     // The table has been resized once (and it's capacity doubled),
     // since we inserted more elements than it can hold
 }
@@ -3063,24 +3000,22 @@ mod tests {
     #[test]
     fn reserve() {
         let map = HashMap::<usize, usize>::new();
-        let guard = map.guard();
 
-        map.insert(42, 0, &guard);
+        map.insert(42, 0);
 
-        map.reserve(32, &guard);
+        map.reserve(32);
 
-        let capacity = map.capacity(&guard);
+        let capacity = map.capacity();
         assert!(capacity >= 16 + 32);
     }
 
     #[test]
     fn reserve_uninit() {
         let map = HashMap::<usize, usize>::new();
-        let guard = map.guard();
 
-        map.reserve(32, &guard);
+        map.reserve(32);
 
-        let capacity = map.capacity(&guard);
+        let capacity = map.capacity();
         assert!(capacity >= 32);
     }
 
@@ -3220,9 +3155,8 @@ fn replace_empty() {
     let map = HashMap::<usize, usize>::new();
 
     {
-        let guard = map.guard();
         assert_eq!(map.len(), 0);
-        let old = map.replace_node(&42, None, None, &guard);
+        let old = map.replace_node(&42, None, None);
         assert_eq!(map.len(), 0);
         assert!(old.is_none());
     }
@@ -3232,12 +3166,11 @@ fn replace_empty() {
 fn replace_existing() {
     let map = HashMap::<usize, usize>::new();
     {
-        let guard = map.guard();
-        map.insert(42, 42, &guard);
+        map.insert(42, 42);
         assert_eq!(map.len(), 1);
-        let old = map.replace_node(&42, Some(10), None, &guard);
+        let old = map.replace_node(&42, Some(10), None);
         assert_eq!(old, Some((&42, &42)));
-        assert_eq!(*map.get(&42, &guard).unwrap(), 10);
+        assert_eq!(*map.get(&42).unwrap(), 10);
         assert_eq!(map.len(), 1);
     }
 }
@@ -3248,9 +3181,9 @@ fn no_replacement_return_val() {
     let map = HashMap::<usize, String>::new();
     {
         let guard = map.guard();
-        map.insert(42, String::from("hello"), &guard);
+        map.insert(42, String::from("hello"));
         assert_eq!(
-            map.put(42, String::from("world"), true, &guard),
+            map.put(42, String::from("world"), true),
             PutResult::Exists {
                 current: &String::from("hello"),
                 not_inserted: Box::new(map.collector.link_value(String::from("world"))),
@@ -3279,13 +3212,12 @@ fn no_replacement_return_val() {
 fn replace_existing_observed_value_non_matching() {
     let map = HashMap::<usize, usize>::new();
     {
-        let guard = map.guard();
-        map.insert(42, 42, &guard);
+        map.insert(42, 42);
         assert_eq!(map.len(), 1);
-        let old = map.replace_node(&42, Some(10), Some(Shared::null()), &guard);
+        let old = map.replace_node(&42, Some(10), Some(Shared::null()));
         assert_eq!(map.len(), 1);
         assert!(old.is_none());
-        assert_eq!(*map.get(&42, &guard).unwrap(), 42);
+        assert_eq!(*map.get(&42).unwrap(), 42);
     }
 }
 
@@ -3293,17 +3225,16 @@ fn replace_existing_observed_value_non_matching() {
 fn replace_twice() {
     let map = HashMap::<usize, usize>::new();
     {
-        let guard = map.guard();
-        map.insert(42, 42, &guard);
+        map.insert(42, 42);
         assert_eq!(map.len(), 1);
-        let old = map.replace_node(&42, Some(43), None, &guard);
+        let old = map.replace_node(&42, Some(43), None);
         assert_eq!(map.len(), 1);
         assert_eq!(old, Some((&42, &42)));
-        assert_eq!(*map.get(&42, &guard).unwrap(), 43);
-        let old = map.replace_node(&42, Some(44), None, &guard);
+        assert_eq!(*map.get(&42).unwrap(), 43);
+        let old = map.replace_node(&42, Some(44), None);
         assert_eq!(map.len(), 1);
         assert_eq!(old, Some((&42, &43)));
-        assert_eq!(*map.get(&42, &guard).unwrap(), 44);
+        assert_eq!(*map.get(&42).unwrap(), 44);
     }
 }
 
@@ -3341,24 +3272,21 @@ mod tree_bins {
         let map = HashMap::<usize, usize, _>::with_hasher(ZeroHashBuilder);
         // first, ensure that we have a tree bin
         {
-            let guard = &map.guard();
             // Force creation of a tree bin by inserting enough values that hash to 0
             for i in 0..10 {
-                map.insert(i, i, guard);
+                map.insert(i, i);
             }
             // Ensure the bin was correctly treeified
             let t = map.table.load(Ordering::Relaxed);
             let t = unsafe { t.deref() };
             let bini = t.bini(0);
-            let bin = t.bin(bini, guard);
+            let bin = t.bin(bini);
             match unsafe { &**bin.deref() } {
                 BinEntry::Tree(_) => {} // pass
                 BinEntry::Moved => panic!("bin was not correctly treeified -- is Moved"),
                 BinEntry::Node(_) => panic!("bin was not correctly treeified -- is Node"),
                 BinEntry::TreeNode(_) => panic!("bin was not correctly treeified -- is TreeNode"),
             }
-
-            let _ = guard;
         }
         // then, spin up lots of reading and writing threads on a range of keys
         const NUM_WRITERS: usize = 5;
@@ -3377,11 +3305,10 @@ mod tree_bins {
             // ...and a reading thread
             let map = m.clone();
             handles.push(std::thread::spawn(move || {
-                let guard = &map.guard();
                 let mut trng = thread_rng();
                 for _ in 0..NUM_REPEATS {
                     let key = uniform.sample(&mut trng);
-                    if let Some(v) = map.get(&key, guard) {
+                    if let Some(v) = map.get(&key) {
                         criterion::black_box(v);
                     }
                 }
@@ -3391,21 +3318,19 @@ mod tree_bins {
             // NUM_WRITERS times, create a writing thread...
             let map = m.clone();
             handles.push(std::thread::spawn(move || {
-                let guard = &map.guard();
                 let mut trng = thread_rng();
                 for _ in 0..NUM_REPEATS {
                     let key = uniform.sample(&mut trng);
-                    map.insert(key, i, guard);
+                    map.insert(key, i);
                 }
             }));
             // ...a removing thread.
             let map = m.clone();
             handles.push(std::thread::spawn(move || {
-                let guard = &map.guard();
                 let mut trng = thread_rng();
                 for _ in 0..NUM_REPEATS {
                     let key = uniform.sample(&mut trng);
-                    if let Some(v) = map.remove(&key, guard) {
+                    if let Some(v) = map.remove(&key) {
                         criterion::black_box(v);
                     }
                 }
@@ -3420,34 +3345,34 @@ mod tree_bins {
 
     #[test]
     fn untreeify_shared_values_remove() {
-        test_tree_bin_remove(|i, map, guard| {
-            assert_eq!(map.remove(&i, guard), Some(&i));
+        test_tree_bin_remove(|i, map| {
+            assert_eq!(map.remove(&i), Some(&i));
         });
     }
 
     #[test]
     fn untreeify_shared_values_compute_if_present() {
-        test_tree_bin_remove(|i, map, guard| {
-            assert_eq!(map.compute_if_present(&i, |_, _| None, guard), None);
+        test_tree_bin_remove(|i, map| {
+            assert_eq!(map.compute_if_present(&i, |_, _| None), None);
         });
     }
 
     fn test_tree_bin_remove<F>(f: F)
     where
-        F: Fn(usize, &HashMap<usize, usize, ZeroHashBuilder>, &Guard<'_>),
+        F: Fn(usize, &HashMap<usize, usize, ZeroHashBuilder>),
     {
         let map = HashMap::<usize, usize, _>::with_hasher(ZeroHashBuilder);
         {
             let guard = &map.guard();
             // Force creation of a tree bin by inserting enough values that hash to 0
             for i in 0..10 {
-                map.insert(i, i, guard);
+                map.insert(i, i);
             }
             // Ensure the bin was correctly treeified
             let t = map.table.load(Ordering::Relaxed);
             let t = unsafe { t.deref() };
             let bini = t.bini(0);
-            let bin = t.bin(bini, guard);
+            let bin = t.bin(bini);
             match unsafe { &**bin.deref() } {
                 BinEntry::Tree(_) => {} // pass
                 BinEntry::Moved => panic!("bin was not correctly treeified -- is Moved"),
@@ -3457,7 +3382,7 @@ mod tree_bins {
 
             // Delete keys to force untreeifying the bin
             for i in 0..9 {
-                f(i, &map, guard);
+                f(i, &map);
             }
             let _ = guard;
         }
@@ -3465,11 +3390,10 @@ mod tree_bins {
 
         {
             // Ensure the bin was correctly untreeified
-            let guard = &map.guard();
             let t = map.table.load(Ordering::Relaxed);
             let t = unsafe { t.deref() };
             let bini = t.bini(0);
-            let bin = t.bin(bini, guard);
+            let bin = t.bin(bini);
             match unsafe { &**bin.deref() } {
                 BinEntry::Tree(_) => panic!("bin was not correctly untreeified -- is Tree"),
                 BinEntry::Moved => panic!("bin was not correctly untreeified -- is Moved"),
@@ -3484,21 +3408,18 @@ mod tree_bins {
         }
 
         // Access a value that should still be in the map
-        let guard = &map.guard();
-        assert_eq!(map.get(&9, guard), Some(&9));
+        assert_eq!(map.get(&9), Some(&9));
     }
 
     #[test]
     #[should_panic]
     fn disallow_evil() {
         let map: HashMap<_, _> = HashMap::default();
-        map.insert(42, String::from("hello"), &map.guard());
+        map.insert(42, String::from("hello"));
 
-        let evil = seize::Collector::new();
-        let guard = evil.enter();
-        let oops = map.get(&42, &guard);
+        let oops = map.get(&42);
 
-        map.remove(&42, &map.guard());
+        map.remove(&42);
         // at this point, the default collector is allowed to free `"hello"`
         // since no guard from `map`s collector is active.
         // `oops` is tied to the lifetime of a Guard that is not a part of
