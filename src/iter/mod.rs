@@ -100,10 +100,8 @@ mod tests {
     fn values() {
         let map = HashMap::<usize, usize>::new();
 
-        let mut guard = map.guard();
         map.insert(1, 42);
         map.insert(2, 84);
-        guard.refresh();
 
         assert_eq!(
             map.values().collect::<HashSet<&usize>>(),

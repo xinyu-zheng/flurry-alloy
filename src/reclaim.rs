@@ -1,7 +1,8 @@
-pub(crate) use seize::{Collector, Guard};
+pub(crate) use seize::Guard;
 
 use std::gc::Gc;
 use std::marker::PhantomData;
+use std::ops::Deref;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::{fmt, ptr};
 
@@ -133,6 +134,22 @@ impl<T> From<*mut Gc<T>> for Shared<'_, T> {
         Shared {
             ptr,
             _g: PhantomData,
+        }
+    }
+}
+
+pub(crate) enum GuardRef<'g> {
+    Owned(Guard<'g>),
+    Ref(&'g Guard<'g>),
+}
+
+impl<'g> Deref for GuardRef<'g> {
+    type Target = Guard<'g>;
+
+    #[inline]
+    fn deref(&self) -> &Guard<'g> {
+        match *self {
+            GuardRef::Owned(ref guard) | GuardRef::Ref(&ref guard) => guard,
         }
     }
 }

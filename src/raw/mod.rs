@@ -1,5 +1,3 @@
-use seize::Linked;
-
 use crate::node::*;
 use crate::reclaim::{self, Atomic, Guard, Shared};
 use std::borrow::Borrow;

@@ -1417,7 +1417,7 @@ impl<K, V> TreeNode<K, V> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::Ordering;
+    use std::{gc::Gc, sync::atomic::Ordering};
 
     fn new_node(hash: u64, key: usize, value: usize) -> Node<usize, usize> {
         Node {
@@ -1479,20 +1479,17 @@ mod tests {
 
     #[test]
     fn find_moved_empty_bins_no_match() {
-        let collector = seize::Collector::new();
-        let guard = collector.enter();
-
         let mut table = Table::<usize, usize>::new(1);
         let table2 = Shared::boxed(Table::new(1));
 
         let entry = table.get_moved(table2);
         table.store_bin(0, entry);
-        assert!(table
-            .find(&collector.link_value(BinEntry::Moved), 1, &2)
-            .is_null());
+        // FIXME: Gc is fine because Link is fine?
+        assert!(table.find(&Gc::new(BinEntry::Moved), 1, &2).is_null());
         table.drop_bins();
         // safety: table2 is still valid and not accessed by different threads
         unsafe { &mut *table2.as_ptr() }.drop_bins();
+        // FIXME: We don't need to defer_retire a Gc.
     }
 
     #[test]
@@ -1557,6 +1554,5 @@ mod tests {
         table.drop_bins();
         // safety: table2 is still valid and not accessed by different threads
         unsafe { &mut *table2.as_ptr() }.drop_bins();
-        unsafe { guard.retire_shared(table2) };
     }
 }
