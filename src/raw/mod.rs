@@ -1,5 +1,5 @@
 use crate::node::*;
-use crate::reclaim::{self, Atomic, Guard, Shared};
+use crate::reclaim::{self, Atomic, Shared};
 use std::borrow::Borrow;
 use std::fmt::Debug;
 use std::gc::Gc;
@@ -177,6 +177,7 @@ impl<K, V> Table<K, V> {
         }
     }
 
+    /*
     pub(crate) fn drop_bins(&mut self) {
         // safety: we have &mut self _and_ all references we have returned are bound to the
         // lifetime of their borrow of self, so there cannot be any outstanding references to
@@ -238,6 +239,7 @@ impl<K, V> Table<K, V> {
             }
         }
     }
+    */
 }
 
 impl<K, V> Drop for Table<K, V> {

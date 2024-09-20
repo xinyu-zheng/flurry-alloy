@@ -1,7 +1,7 @@
 use crate::iter::*;
 use crate::node::*;
 use crate::raw::*;
-use crate::reclaim::{Atomic, Guard, Shared};
+use crate::reclaim::{Atomic, Shared};
 use std::borrow::Borrow;
 use std::error::Error;
 use std::fmt::{self, Debug, Display, Formatter};
@@ -170,7 +170,7 @@ pub struct TryInsertError<'a, V> {
     /// A reference to the current value mapped to the key.
     pub current: &'a V,
     /// The value that [`HashMap::try_insert`] failed to insert.
-    pub not_inserted: V,
+    pub not_inserted: Gc<V>,
 }
 
 impl<'a, V> Display for TryInsertError<'a, V>
@@ -672,7 +672,6 @@ where
                 if finishing {
                     // this branch is only taken for one thread partaking in the resize!
                     self.next_table.store(Shared::null(), Ordering::SeqCst);
-                    let now_garbage = self.table.swap(next_table_ptr, Ordering::SeqCst);
                     // safety: need to guarantee that now_garbage is no longer reachable. more
                     // specifically, no thread that executes _after_ this line can ever get a
                     // reference to now_garbage.
@@ -945,16 +944,12 @@ where
                         e = tree_node.node.next.load(Ordering::Relaxed);
                     }
 
-                    let mut reused_bin = false;
                     let low_bin = if low_count <= UNTREEIFY_THRESHOLD {
                         // use a regular bin instead of a tree bin since the
                         // bin is too small. since the tree nodes are
                         // already behind shared references, we have to
                         // clean them up manually.
                         let low_linear = self.untreeify(low);
-                        // safety: we have just created `low` and its `next`
-                        // nodes and have never shared them
-                        unsafe { TreeBin::drop_tree_nodes(low, false) };
                         low_linear
                     } else if high_count != 0 {
                         // the new bin will also be a tree bin. if both the high
@@ -969,19 +964,10 @@ where
                         // if not, we can re-use the old bin here, since it will
                         // be swapped for a Moved entry while we are still
                         // behind the bin lock.
-                        reused_bin = true;
-                        // since we also don't use the created low nodes here,
-                        // we need to clean them up.
-                        // safety: we have just created `low` and its `next`
-                        // nodes and have never shared them
-                        unsafe { TreeBin::drop_tree_nodes(low, false) };
                         bin
                     };
                     let high_bin = if high_count <= UNTREEIFY_THRESHOLD {
                         let high_linear = self.untreeify(high);
-                        // safety: we have just created `high` and its `next`
-                        // nodes and have never shared them
-                        unsafe { TreeBin::drop_tree_nodes(high, false) };
                         high_linear
                     } else if low_count != 0 {
                         // safety: we have just created `high` and its `next` nodes using `Shared::boxed`
@@ -990,12 +976,8 @@ where
 
                         Shared::boxed(high_bin)
                     } else {
-                        reused_bin = true;
                         // since we also don't use the created low nodes here,
                         // we need to clean them up.
-                        // safety: we have just created `high` and its `next`
-                        // nodes and have never shared them
-                        unsafe { TreeBin::drop_tree_nodes(high, false) };
                         bin
                     };
 
@@ -1003,18 +985,6 @@ where
                     next_table.store_bin(i + n, high_bin);
                     table.store_bin(i, table.get_moved(next_table_ptr));
 
-                    // if we did not re-use the old bin, it is now garbage,
-                    // since all of its nodes have been reallocated. However,
-                    // we always re-use the stored values, so we can't drop those.
-                    if !reused_bin {
-                        // safety: the entry for this bin in the old table was
-                        // swapped for a Moved entry, so no thread can obtain a
-                        // new reference to `bin` from there. we only defer
-                        // dropping the old bin if it was not used in
-                        // `next_table` so there is no other reference to it
-                        // anyone could obtain.
-                        unsafe { TreeBin::defer_drop_without_values(bin) };
-                    }
 
                     advance = true;
                     drop(bin_lock);
@@ -1423,7 +1393,6 @@ where
                                 .as_node()
                                 .expect("entry following Node should always be a Node");
                             let next = node.next.load(Ordering::SeqCst);
-                            let value = node.value.load(Ordering::SeqCst);
                             // NOTE: do not use the reference in `node` after this point!
 
                             // free the node's value
@@ -1437,7 +1406,6 @@ where
                         };
                     }
                     // finally, we can drop the head node and its value
-                    let value = node.value.load(Ordering::SeqCst);
                     // NOTE: do not use the reference in `node` after this point!
                     // safety: same as the argument for being allowed to free the nodes beyond the head above
                     delta -= 1;
@@ -1570,8 +1538,7 @@ where
                 not_inserted,
             } => Err(TryInsertError {
                 current,
-                // FIXME: unwrap to get the V
-                not_inserted: not_inserted.value,
+                not_inserted: *not_inserted,
             }),
             PutResult::Inserted { new } => Ok(new),
             PutResult::Replaced { .. } => {
@@ -1631,9 +1598,9 @@ where
                     Err(changed) => {
                         assert!(!changed.current.is_null());
                         bin = changed.current;
-                        // FIXME: ** to get the value
-                        if let BinEntry::Node(node) = unsafe { changed.new.into_box() }.value {
-                            key = node.key;
+                        // FIXME: clone?
+                        if let BinEntry::Node(node) = unsafe { &**changed.new.into_box() } {
+                            key = node.key.clone();
                         } else {
                             unreachable!("we declared node and it is a BinEntry::Node");
                         }
@@ -1722,7 +1689,6 @@ where
                                 };
                             } else {
                                 // update the value in the existing node
-                                let now_garbage = n.value.swap(value, Ordering::SeqCst);
                                 // NOTE: now_garbage == current_value
 
                                 // safety: need to guarantee that now_garbage is no longer
@@ -1810,7 +1776,6 @@ where
                                 not_inserted: unsafe { value.into_box() },
                             };
                         } else {
-                            let now_garbage = tree_node.node.value.swap(value, Ordering::SeqCst);
                             // NOTE: now_garbage == current_value
 
                             // safety: need to guarantee that now_garbage is no longer
@@ -2007,7 +1972,6 @@ where
 
                             if let Some(value) = new_value {
                                 let value = Shared::boxed(value);
-                                let now_garbage = n.value.swap(value, Ordering::SeqCst);
                                 // NOTE: now_garbage == current_value
 
                                 // safety: need to guarantee that now_garbage is no longer
@@ -2131,7 +2095,6 @@ where
 
                             if let Some(value) = new_value {
                                 let value = Shared::boxed(value);
-                                let now_garbage = n.value.swap(value, Ordering::SeqCst);
                                 // NOTE: now_garbage == current_value
 
                                 // safety: need to guarantee that now_garbage is no longer
@@ -2172,21 +2135,6 @@ where
                                     let linear_bin =
                                         self.untreeify(tree_bin.first.load(Ordering::SeqCst));
                                     t.store_bin(bini, linear_bin);
-                                    // the old bin is now garbage, but its values are not,
-                                    // since they are re-used in the linear bin.
-                                    // safety: in the same way as for `now_garbage` above, any existing
-                                    // references to `bin` must have been obtained before storing the
-                                    // linear bin. These references were obtained while holding a
-                                    // guard, and are protected until they drop it and decrement
-                                    // the reference count. After the store, threads will
-                                    // always see the linear bin, so the cannot obtain new references either.
-                                    //
-                                    // The same holds for `p` and its value, which does not get dropped together
-                                    // with `bin` here since `remove_tree_node` indicated that the bin needs to
-                                    // be untreeified.
-                                    unsafe {
-                                        TreeBin::defer_drop_without_values(bin);
-                                    }
                                 }
                                 None
                             }
@@ -2473,12 +2421,6 @@ where
                                 let linear_bin =
                                     self.untreeify(tree_bin.first.load(Ordering::SeqCst));
                                 t.store_bin(bini, linear_bin);
-                                // the old bin is now garbage, but its values are not,
-                                // since they get re-used in the linear bin
-                                // safety: same as in put
-                                unsafe {
-                                    TreeBin::defer_drop_without_values(bin);
-                                }
                             }
                         }
                     }
@@ -2799,6 +2741,7 @@ where
     }
 }
 
+/*
 impl<K, V, S> Drop for HashMap<K, V, S> {
     fn drop(&mut self) {
         // safety: we have &mut self _and_ all references we have returned are bound to the
@@ -2817,11 +2760,13 @@ impl<K, V, S> Drop for HashMap<K, V, S> {
             return;
         }
 
+        // FIXME: safety
         // safety: same as above + we own the table
         let mut table = unsafe { table.into_box() };
         table.drop_bins();
     }
 }
+*/
 
 impl<K, V, S> Extend<(K, V)> for &HashMap<K, V, S>
 where

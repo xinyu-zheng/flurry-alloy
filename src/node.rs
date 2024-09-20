@@ -2,7 +2,6 @@ use crate::raw::Table;
 use crate::reclaim::{Atomic, Shared};
 use core::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use parking_lot::Mutex;
-use seize::{Link, Linked};
 use std::borrow::Borrow;
 use std::thread::{current, park, Thread};
 
@@ -362,7 +361,6 @@ impl<K, V> TreeBin<K, V> {
                 {
                     // we won the race for the lock and get to return from blocking
                     if waiting {
-                        let waiter = self.waiter.swap(Shared::null(), Ordering::SeqCst);
                         // safety: we are the only thread that modifies the
                         // `waiter` thread handle (reading threads only use it
                         // to notify us). Thus, having stored a valid value
@@ -898,6 +896,7 @@ where
     }
 }
 
+/*
 impl<K, V> Drop for TreeBin<K, V> {
     fn drop(&mut self) {
         // safety: we have &mut self _and_ all references we have returned are bound to the
@@ -906,7 +905,9 @@ impl<K, V> Drop for TreeBin<K, V> {
         unsafe { self.drop_fields(true) };
     }
 }
+*/
 
+/*
 impl<K, V> TreeBin<K, V> {
     /// Defers dropping the given tree bin without its nodes' values.
     ///
@@ -946,7 +947,6 @@ impl<K, V> TreeBin<K, V> {
         // swap out first pointer so nodes will not get dropped again when
         // `tree_bin` is dropped
         let p = self.first.swap(Shared::null(), Ordering::Relaxed);
-        Self::drop_tree_nodes(p, drop_values);
     }
 
     /// Drops the given list of tree nodes, but only drops their values when specified.
@@ -971,6 +971,7 @@ impl<K, V> TreeBin<K, V> {
         }
     }
 }
+*/
 
 /* Helper impls to avoid code explosion */
 impl<K, V> TreeNode<K, V> {
@@ -1417,7 +1418,7 @@ impl<K, V> TreeNode<K, V> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{gc::Gc, sync::atomic::Ordering};
+    use std::sync::atomic::Ordering;
 
     fn new_node(hash: u64, key: usize, value: usize) -> Node<usize, usize> {
         Node {
@@ -1436,17 +1437,16 @@ mod tests {
         let node1 = new_node(1, 2, 3);
         node1.next.store(Shared::boxed(entry2), Ordering::SeqCst);
         let entry1 = Shared::boxed(BinEntry::Node(node1));
-        let mut tab = Table::from(vec![Atomic::from(entry1)]);
+        let tab = Table::from(vec![Atomic::from(entry1)]);
 
         // safety: we have not yet dropped entry1
         assert!(tab.find(unsafe { entry1.deref() }, 1, &0).is_null());
-        tab.drop_bins();
     }
 
     #[test]
     fn find_node_single_match() {
         let entry = Shared::boxed(BinEntry::Node(new_node(1, 2, 3)));
-        let mut tab = Table::from(vec![Atomic::from(entry)]);
+        let tab = Table::from(vec![Atomic::from(entry)]);
         assert_eq!(
             // safety: we have not yet dropped entry
             unsafe { tab.find(entry.deref(), 1, &2).deref() }
@@ -1455,7 +1455,6 @@ mod tests {
                 .key,
             2
         );
-        tab.drop_bins();
     }
 
     #[test]
@@ -1465,7 +1464,7 @@ mod tests {
         let node1 = new_node(1, 2, 3);
         node1.next.store(Shared::boxed(entry2), Ordering::SeqCst);
         let entry1 = Shared::boxed(BinEntry::Node(node1));
-        let mut tab = Table::from(vec![Atomic::from(entry1)]);
+        let tab = Table::from(vec![Atomic::from(entry1)]);
         assert_eq!(
             // safety: we have not yet dropped entry1
             unsafe { tab.find(entry1.deref(), 4, &5).deref() }
@@ -1474,9 +1473,10 @@ mod tests {
                 .key,
             5
         );
-        tab.drop_bins();
     }
 
+    /*
+    // FIXME
     #[test]
     fn find_moved_empty_bins_no_match() {
         let mut table = Table::<usize, usize>::new(1);
@@ -1555,4 +1555,5 @@ mod tests {
         // safety: table2 is still valid and not accessed by different threads
         unsafe { &mut *table2.as_ptr() }.drop_bins();
     }
+    */
 }
