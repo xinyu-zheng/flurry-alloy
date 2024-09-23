@@ -142,7 +142,7 @@ where
 impl<K, V, S> HashMapRef<'_, K, V, S>
 where
     K: Sync + Send + Clone + Hash + Ord,
-    V: Sync + Send,
+    V: Sync + Send + std::gc::ReferenceFree,
     S: BuildHasher,
 {
     /// Inserts a key-value pair into the map.

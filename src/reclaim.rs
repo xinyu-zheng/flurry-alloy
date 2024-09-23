@@ -1,12 +1,10 @@
-pub(crate) use seize::Guard;
-
 use std::gc::Gc;
 use std::marker::PhantomData;
-use std::ops::Deref;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::{fmt, ptr};
 
 pub(crate) struct Atomic<T>(AtomicPtr<Gc<T>>);
+
 
 impl<T> Atomic<T> {
     pub(crate) fn null() -> Self {
@@ -83,13 +81,16 @@ pub(crate) struct Shared<'g, T> {
     _g: PhantomData<&'g ()>,
 }
 
+impl<'g, T: std::gc::ReferenceFree> Shared<'g, T> {
+    pub(crate) fn boxed(value: T) -> Self {
+        Shared::from(Box::into_raw(Box::new(Gc::new(value))))
+    }
+
+} 
+
 impl<'g, T> Shared<'g, T> {
     pub(crate) fn null() -> Self {
         Shared::from(ptr::null_mut())
-    }
-
-    pub(crate) fn boxed(value: T) -> Self {
-        Shared::from(Box::into_raw(Box::new(Gc::new(value))))
     }
 
     pub(crate) unsafe fn into_box(self) -> Box<Gc<T>> {
@@ -134,22 +135,6 @@ impl<T> From<*mut Gc<T>> for Shared<'_, T> {
         Shared {
             ptr,
             _g: PhantomData,
-        }
-    }
-}
-
-pub(crate) enum GuardRef<'g> {
-    Owned(Guard<'g>),
-    Ref(&'g Guard<'g>),
-}
-
-impl<'g> Deref for GuardRef<'g> {
-    type Target = Guard<'g>;
-
-    #[inline]
-    fn deref(&self) -> &Guard<'g> {
-        match *self {
-            GuardRef::Owned(ref guard) | GuardRef::Ref(&ref guard) => guard,
         }
     }
 }

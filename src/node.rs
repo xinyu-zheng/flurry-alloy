@@ -16,6 +16,8 @@ pub(crate) enum BinEntry<K, V> {
     Moved,
 }
 
+impl<K, V> std::gc::ReferenceFree for BinEntry<K, V> {}
+
 unsafe impl<K, V> Send for BinEntry<K, V>
 where
     K: Send,
