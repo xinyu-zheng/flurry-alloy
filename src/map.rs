@@ -986,7 +986,6 @@ where
                     next_table.store_bin(i + n, high_bin);
                     table.store_bin(i, table.get_moved(next_table_ptr));
 
-
                     advance = true;
                     drop(bin_lock);
                 }
@@ -2181,7 +2180,7 @@ where
     /// assert_eq!(map.pin().remove(&1), Some(&"a"));
     /// assert_eq!(map.pin().remove(&1), None);
     /// ```
-    pub fn remove<'g, Q>(&'g self, key: &Q) -> Option<&'g V>
+    pub fn remove<'g, Q>(&self, key: &Q) -> Option<Gc<V>>
     where
         K: Borrow<Q>,
         Q: ?Sized + Hash + Ord,
@@ -2213,7 +2212,7 @@ where
     /// assert_eq!(map.remove_entry(&1, &guard), Some((&1, &"a")));
     /// assert_eq!(map.remove(&1, &guard), None);
     /// ```
-    pub fn remove_entry<'g, Q>(&'g self, key: &Q) -> Option<(&'g K, &'g V)>
+    pub fn remove_entry<'g, Q>(&'g self, key: &Q) -> Option<(&'g K, Gc<V>)>
     where
         K: Borrow<Q>,
         Q: ?Sized + Hash + Ord,
@@ -2243,7 +2242,7 @@ where
         key: &Q,
         new_value: Option<V>,
         observed_value: Option<Shared<'g, V>>,
-    ) -> Option<(&'g K, &'g V)>
+    ) -> Option<(&'g K, Gc<V>)>
     where
         K: Borrow<Q>,
         Q: ?Sized + Hash + Ord,
@@ -2460,7 +2459,7 @@ where
                 // safety: the lifetime of the reference is bound to the guard
                 // supplied which means that the memory will not be freed
                 // until at least after the guard goes out of scope
-                return unsafe { val.as_ref() }.map(move |v| (key, &**v));
+                return unsafe { val.as_ref() }.map(move |v| (key, *v));
             }
             break;
         }
