@@ -24,18 +24,17 @@ impl BuildHasher for ZeroHashBuilder {
 fn check<S: BuildHasher + Default>() {
     let range = if cfg!(miri) { 0..16 } else { 0..1000 };
     let map = HashMap::<i32, i32, S>::default();
-    let guard = map.guard();
     for i in range.clone() {
-        map.insert(i, i, &guard);
+        map.insert(i, i);
     }
 
-    assert!(!map.contains_key(&i32::min_value(), &guard));
-    assert!(!map.contains_key(&(range.start - 1), &guard));
+    assert!(!map.contains_key(&i32::min_value()));
+    assert!(!map.contains_key(&(range.start - 1)));
     for i in range.clone() {
-        assert!(map.contains_key(&i, &guard));
+        assert!(map.contains_key(&i));
     }
-    assert!(!map.contains_key(&range.end, &guard));
-    assert!(!map.contains_key(&i32::max_value(), &guard));
+    assert!(!map.contains_key(&range.end));
+    assert!(!map.contains_key(&i32::max_value()));
 }
 
 #[test]

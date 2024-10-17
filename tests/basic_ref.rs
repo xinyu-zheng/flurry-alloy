@@ -10,8 +10,7 @@ fn pin() {
 #[test]
 fn with_guard() {
     let map = HashMap::<usize, usize>::new();
-    let guard = map.guard();
-    let _pinned = map.with_guard(&guard);
+    let _pinned = map.with_guard();
 }
 
 #[test]
@@ -67,7 +66,7 @@ fn insert_and_remove() {
     let map = map.pin();
     map.insert(42, 0);
     let old = map.remove(&42).unwrap();
-    assert_eq!(old, &0);
+    assert_eq!(*old, 0);
     assert!(map.get(&42).is_none());
 }
 
@@ -136,11 +135,11 @@ fn one_bucket() {
     // note that we must remove them in a particular order
     // so that we test all three node positions
     let v = map.remove("middle");
-    assert_eq!(v, Some(&11));
+    assert_eq!(*v.unwrap(), 11);
     let v = map.remove("tail");
-    assert_eq!(v, Some(&101));
+    assert_eq!(*v.unwrap(), 101);
     let v = map.remove("head");
-    assert_eq!(v, Some(&1));
+    assert_eq!(*v.unwrap(), 1);
 }
 
 #[test]
@@ -461,7 +460,7 @@ fn concurrent_remove() {
         let map1 = map1.pin();
         for i in 0..64 {
             if let Some(v) = map1.remove(&i) {
-                assert_eq!(v, &i);
+                assert_eq!(*v, i);
             }
         }
     });
@@ -470,7 +469,7 @@ fn concurrent_remove() {
         let map2 = map2.pin();
         for i in 0..64 {
             if let Some(v) = map2.remove(&i) {
-                assert_eq!(v, &i);
+                assert_eq!(*v, i);
             }
         }
     });

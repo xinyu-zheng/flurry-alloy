@@ -53,10 +53,9 @@ macro_rules! bench_insert {
         $group.bench_function(BenchmarkId::from_parameter($bench_id), |b| {
             let map: HashMap<_, _> = HashMap::with_capacity(SIZE as usize);
             b.iter(|| {
-                let guard = map.guard();
-                map.clear(&guard);
+                map.clear();
                 ($keydist).take(SIZE).for_each(|i| {
-                    map.insert(i, i, &guard);
+                    map.insert(i, i);
                 });
                 black_box(&map);
             });
@@ -77,9 +76,8 @@ macro_rules! bench_insert_erase {
             // NOTE: in testing, I tried running this without the local scope.
             // not dropping the guard and pinning the epoch for the entire benchmark literally
             // crashed multiple programs on my PC, so I advise not to do that...
-            let guard = base.guard();
             ($keydist).take(SIZE).for_each(|i| {
-                base.insert(i, i, &guard);
+                base.insert(i, i);
             });
         }
         let skip = ($keydist).take(SIZE);
@@ -92,15 +90,13 @@ macro_rules! bench_insert_erase {
 
                 // While keeping the size constant,
                 // replace the first keydist with the second.
-                let guard = map.guard();
                 (&mut add_iter)
                     .zip(&mut remove_iter)
                     .take(SIZE)
                     .for_each(|(add, remove)| {
-                        map.insert(add, add, &guard);
-                        black_box(map.remove(&remove, &guard));
+                        map.insert(add, add);
+                        black_box(map.remove(&remove));
                     });
-                drop(guard);
                 black_box(&mut map);
             });
         });
@@ -118,17 +114,15 @@ macro_rules! bench_lookup {
         let map: HashMap<_, _> = HashMap::with_capacity(SIZE as usize);
         {
             // see bench_insert_erase for a comment on the local scope
-            let guard = map.guard();
             ($keydist).take(SIZE).for_each(|i| {
-                map.insert(i, i, &guard);
+                map.insert(i, i);
             });
         }
 
         $group.bench_function(BenchmarkId::from_parameter($bench_id), |b| {
             b.iter(|| {
-                let guard = map.guard();
                 ($keydist).take(SIZE).for_each(|i| {
-                    black_box(map.get(&i, &guard));
+                    black_box(map.get(&i));
                 });
             });
         });
@@ -143,17 +137,15 @@ macro_rules! bench_lookup_fail {
         let mut iter = $keydist;
         {
             // see bench_insert_erase for a comment on the local scope
-            let guard = map.guard();
             (&mut iter).take(SIZE).for_each(|i| {
-                map.insert(i, i, &guard);
+                map.insert(i, i);
             });
         }
 
         $group.bench_function(BenchmarkId::from_parameter($bench_id), |b| {
             b.iter(|| {
-                let guard = map.guard();
                 (&mut iter).take(SIZE).for_each(|i| {
-                    black_box(map.get(&i, &guard));
+                    black_box(map.get(&i));
                 });
             });
         });
@@ -171,16 +163,14 @@ macro_rules! bench_iter {
         let map: HashMap<_, _> = HashMap::with_capacity(SIZE as usize);
         {
             // see bench_insert_erase for a comment on the local scope
-            let guard = map.guard();
             ($keydist).take(SIZE).for_each(|i| {
-                map.insert(i, i, &guard);
+                map.insert(i, i);
             });
         }
 
         $group.bench_function(BenchmarkId::from_parameter($bench_id), |b| {
             b.iter(|| {
-                let guard = map.guard();
-                for k in map.iter(&guard) {
+                for k in map.iter() {
                     black_box(k);
                 }
             });

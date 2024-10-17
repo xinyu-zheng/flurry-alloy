@@ -673,6 +673,7 @@ where
                 if finishing {
                     // this branch is only taken for one thread partaking in the resize!
                     self.next_table.store(Shared::null(), Ordering::SeqCst);
+                    let _ = self.table.swap(next_table_ptr, Ordering::SeqCst);
                     // safety: need to guarantee that now_garbage is no longer reachable. more
                     // specifically, no thread that executes _after_ this line can ever get a
                     // reference to now_garbage.
@@ -1689,6 +1690,7 @@ where
                                 };
                             } else {
                                 // update the value in the existing node
+                                let _ = n.value.swap(value, Ordering::SeqCst);
                                 // NOTE: now_garbage == current_value
 
                                 // safety: need to guarantee that now_garbage is no longer
@@ -1776,6 +1778,7 @@ where
                                 not_inserted: unsafe { value.into_box() },
                             };
                         } else {
+                            let _ = tree_node.node.value.swap(value, Ordering::SeqCst);
                             // NOTE: now_garbage == current_value
 
                             // safety: need to guarantee that now_garbage is no longer
@@ -1972,6 +1975,7 @@ where
 
                             if let Some(value) = new_value {
                                 let value = Shared::boxed(value);
+                                let _ = n.value.swap(value, Ordering::SeqCst);
                                 // NOTE: now_garbage == current_value
 
                                 // safety: need to guarantee that now_garbage is no longer
@@ -2095,6 +2099,7 @@ where
 
                             if let Some(value) = new_value {
                                 let value = Shared::boxed(value);
+                                let _ = n.value.swap(value, Ordering::SeqCst);
                                 // NOTE: now_garbage == current_value
 
                                 // safety: need to guarantee that now_garbage is no longer
@@ -3075,7 +3080,8 @@ fn replace_existing() {
         map.insert(42, 42);
         assert_eq!(map.len(), 1);
         let old = map.replace_node(&42, Some(10), None);
-        assert_eq!(old, Some((&42, &42)));
+        assert_eq!(old.unwrap().0, &42);
+        assert_eq!(*old.unwrap().1, 42);
         assert_eq!(*map.get(&42).unwrap(), 10);
         assert_eq!(map.len(), 1);
     }
@@ -3134,11 +3140,13 @@ fn replace_twice() {
         assert_eq!(map.len(), 1);
         let old = map.replace_node(&42, Some(43), None);
         assert_eq!(map.len(), 1);
-        assert_eq!(old, Some((&42, &42)));
+        assert_eq!(old.unwrap().0, &42);
+        assert_eq!(*old.unwrap().1, 42);
         assert_eq!(*map.get(&42).unwrap(), 43);
         let old = map.replace_node(&42, Some(44), None);
         assert_eq!(map.len(), 1);
-        assert_eq!(old, Some((&42, &43)));
+        assert_eq!(old.unwrap().0, &42);
+        assert_eq!(*old.unwrap().1, 43);
         assert_eq!(*map.get(&42).unwrap(), 44);
     }
 }
@@ -3251,7 +3259,7 @@ mod tree_bins {
     #[test]
     fn untreeify_shared_values_remove() {
         test_tree_bin_remove(|i, map| {
-            assert_eq!(map.remove(&i), Some(&i));
+            assert_eq!(*map.remove(&i).unwrap(), i);
         });
     }
 
