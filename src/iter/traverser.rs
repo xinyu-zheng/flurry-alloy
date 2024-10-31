@@ -1,13 +1,12 @@
 use crate::node::{BinEntry, Node, TreeNode};
 use crate::raw::Table;
 use crate::reclaim::Shared;
-use std::gc::Gc;
 use std::sync::atomic::Ordering;
 
 #[derive(Debug)]
 pub(crate) struct NodeIter<'g, K, V> {
     /// Current table; update if resized
-    table: Option<&'g Gc<Table<K, V>>>,
+    table: Option<&'g Table<K, V>>,
 
     stack: Option<Box<TableStack<'g, K, V>>>,
     spare: Option<Box<TableStack<'g, K, V>>>,
@@ -51,7 +50,7 @@ impl<'g, K, V> NodeIter<'g, K, V> {
         }
     }
 
-    fn push_state(&mut self, t: &'g Gc<Table<K, V>>, i: usize, n: usize) {
+    fn push_state(&mut self, t: &'g Table<K, V>, i: usize, n: usize) {
         let mut s = self.spare.take();
         if let Some(ref mut s) = s {
             self.spare = s.next.take();
@@ -119,7 +118,7 @@ impl<'g, K, V> Iterator for NodeIter<'g, K, V> {
                 // inheritance (everything is a node), but we have to explicitly
                 // check
                 // safety: flurry does not drop or move until after guard drop
-                match **unsafe { next.deref() } {
+                match *unsafe { next.deref() } {
                     BinEntry::Node(ref node) => {
                         e = Some(node);
                     }
@@ -154,7 +153,7 @@ impl<'g, K, V> Iterator for NodeIter<'g, K, V> {
             if !bin.is_null() {
                 // safety: flurry does not drop or move until after guard drop
                 let bin = unsafe { bin.deref() };
-                match **bin {
+                match *bin {
                     BinEntry::Moved => {
                         // recurse down into the target table
                         // safety: same argument as for following Moved in Table::find
@@ -206,7 +205,7 @@ impl<'g, K, V> Iterator for NodeIter<'g, K, V> {
 struct TableStack<'g, K, V> {
     length: usize,
     index: usize,
-    table: &'g Gc<Table<K, V>>,
+    table: &'g Table<K, V>,
     next: Option<Box<TableStack<'g, K, V>>>,
 }
 

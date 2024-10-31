@@ -177,7 +177,7 @@ where
     /// Removes a key-value pair from the map, and returns the removed value (if any).
     ///
     /// See also [`HashMap::remove`].
-    pub fn remove<'g, Q>(&self, key: &Q) -> Option<Gc<V>>
+    pub fn remove<'g, Q>(&'g self, key: &Q) -> Option<&'g V>
     where
         K: Borrow<Q>,
         Q: ?Sized + Hash + Ord,
@@ -189,7 +189,7 @@ where
     /// key was previously in the map.
     ///
     /// See also [`HashMap::remove_entry`].
-    pub fn remove_entry<'g, Q>(&'g self, key: &Q) -> Option<(&'g K, Gc<V>)>
+    pub fn remove_entry<'g, Q>(&'g self, key: &Q) -> Option<(&'g K, &'g V)>
     where
         K: Borrow<Q>,
         Q: ?Sized + Hash + Ord,

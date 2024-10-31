@@ -1,5 +1,6 @@
+#![feature(gc)]
 use flurry::*;
-use std::sync::Arc;
+use std::{gc::GcAllocator, sync::Arc, thread, time};
 
 #[test]
 fn new() {
@@ -341,8 +342,12 @@ fn current_kv_dropped() {
     map.insert(dropped1.clone(), dropped2.clone());
     assert_eq!(Arc::strong_count(&dropped1), 2);
     assert_eq!(Arc::strong_count(&dropped2), 2);
-
     drop(map);
+
+    //GcAllocator::force_gc();
+    //let ten_seconds = time::Duration::from_millis(10000);
+
+    //thread::sleep(ten_seconds);
 
     // dropping the map should immediately drop (not deferred) all keys and values
     assert_eq!(Arc::strong_count(&dropped1), 1);

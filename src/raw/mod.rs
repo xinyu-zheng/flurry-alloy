@@ -2,7 +2,6 @@ use crate::node::*;
 use crate::reclaim::{self, Atomic, Shared};
 use std::borrow::Borrow;
 use std::fmt::Debug;
-use std::gc::Gc;
 use std::sync::atomic::Ordering;
 
 #[derive(Debug)]
@@ -101,7 +100,7 @@ impl<K, V> Table<K, V> {
 
     pub(crate) fn find<'g, Q>(
         &'g self,
-        bin: &Gc<BinEntry<K, V>>,
+        bin: &BinEntry<K, V>,
         hash: u64,
         key: &Q,
     ) -> Shared<'g, BinEntry<K, V>>
@@ -109,11 +108,11 @@ impl<K, V> Table<K, V> {
         K: Borrow<Q>,
         Q: ?Sized + Ord,
     {
-        match **bin {
+        match *bin {
             BinEntry::Node(_) => {
                 let mut node = bin;
                 loop {
-                    let n = if let BinEntry::Node(ref n) = **node {
+                    let n = if let BinEntry::Node(ref n) = *node {
                         n
                     } else {
                         unreachable!("BinEntry::Node only points to BinEntry::Node");
@@ -151,7 +150,7 @@ impl<K, V> Table<K, V> {
                     // safety: the table is protected by the guard, and so is the bin.
                     let bin = unsafe { bin.deref() };
 
-                    match **bin {
+                    match *bin {
                         BinEntry::Node(_) | BinEntry::Tree(_) => {
                             break table.find(bin, hash, key)
                         }
@@ -177,12 +176,10 @@ impl<K, V> Table<K, V> {
         }
     }
 
-    /*
     pub(crate) fn drop_bins(&mut self) {
         // safety: we have &mut self _and_ all references we have returned are bound to the
         // lifetime of their borrow of self, so there cannot be any outstanding references to
         // anything in the map.
-        let guard = unsafe { Guard::unprotected() };
 
         for bin in Vec::from(std::mem::replace(&mut self.bins, vec![].into_boxed_slice())) {
             if bin.load(Ordering::SeqCst).is_null() {
@@ -195,7 +192,7 @@ impl<K, V> Table<K, V> {
             // of `drop`
             // safety: same as above
             let bin_entry = unsafe { bin.load(Ordering::SeqCst).deref() };
-            match **bin_entry {
+            match *bin_entry {
                 BinEntry::Moved => {}
                 BinEntry::Node(_) => {
                     // safety: same as above + we own the bin - Nodes are not shared across the table
@@ -206,7 +203,7 @@ impl<K, V> Table<K, V> {
                         // we replaced the bin with a NULL, so there's no future way to access it
                         // either; we own all the nodes in the list.
 
-                        let node = if let BinEntry::Node(node) = p.value {
+                        let node = if let BinEntry::Node(node) = *p {
                             node
                         } else {
                             unreachable!();
@@ -225,7 +222,7 @@ impl<K, V> Table<K, V> {
                 BinEntry::Tree(_) => {
                     // safety: same as for BinEntry::Node
                     let p = unsafe { bin.into_box() };
-                    let bin = if let BinEntry::Tree(bin) = p.value {
+                    let bin = if let BinEntry::Tree(bin) = *p {
                         bin
                     } else {
                         unreachable!();
@@ -239,7 +236,6 @@ impl<K, V> Table<K, V> {
             }
         }
     }
-    */
 }
 
 impl<K, V> Drop for Table<K, V> {
@@ -258,7 +254,7 @@ impl<K, V> Drop for Table<K, V> {
                 } else {
                     // safety: we have mut access to self, so no-one else will drop this value under us.
                     let bin = unsafe { bin.deref() };
-                    if let BinEntry::Moved = **bin {
+                    if let BinEntry::Moved = *bin {
                     } else {
                         unreachable!("dropped table with non-empty bin");
                     }

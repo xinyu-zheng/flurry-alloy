@@ -275,7 +275,7 @@ where
             let mut p = root;
             loop {
                 let p_deref = unsafe { TreeNode::get_tree_node(p) };
-                let p_key = &p_deref.node.key;
+                let p_key: &K = &p_deref.node.key;
                 let p_hash = p_deref.node.hash;
 
                 // Select successor of p in the correct direction. We will continue
@@ -449,7 +449,7 @@ impl<K, V> TreeBin<K, V> {
                 // we hold onto the guard.
                 // Structurally, TreeNodes always point to TreeNodes, so this is sound.
                 let element_deref = unsafe { TreeNode::get_tree_node(element) };
-                let element_key = &element_deref.node.key;
+                let element_key: &K = &element_deref.node.key;
                 if element_deref.node.hash == hash && element_key.borrow() == key {
                     return element;
                 }
@@ -812,7 +812,7 @@ where
                     &p_deref.right
                 }
                 std::cmp::Ordering::Equal => {
-                    let p_key = &p_deref.node.key;
+                    let p_key: &K = &p_deref.node.key;
                     if *p_key == key {
                         // a node with the given key already exists, so we return it
                         return p;

@@ -5,7 +5,6 @@ use crate::reclaim::{Atomic, Shared};
 use std::borrow::Borrow;
 use std::error::Error;
 use std::fmt::{self, Debug, Display, Formatter};
-use std::gc::Gc;
 use std::gc::ReferenceFree;
 use std::hash::{BuildHasher, Hash};
 use std::sync::atomic::{AtomicIsize, Ordering};
@@ -142,7 +141,7 @@ enum PutResult<'a, T> {
     },
     Exists {
         current: &'a T,
-        not_inserted: Box<Gc<T>>,
+        not_inserted: Box<T>,
     },
 }
 
@@ -171,7 +170,7 @@ pub struct TryInsertError<'a, V> {
     /// A reference to the current value mapped to the key.
     pub current: &'a V,
     /// The value that [`HashMap::try_insert`] failed to insert.
-    pub not_inserted: Gc<V>,
+    pub not_inserted: V,
 }
 
 impl<'a, V> Display for TryInsertError<'a, V>
@@ -760,7 +759,7 @@ where
             // swap happened, it must have happened _after_ we read. since we did the read while
             // the current thread was marked as active, we must be included in the reference count,
             // and the drop must happen _after_ we decrement the count (i.e drop our guard).
-            match **unsafe { bin.deref() } {
+            match *unsafe { bin.deref() } {
                 BinEntry::Moved => {
                     // already processed
                     advance = true;
@@ -1210,7 +1209,7 @@ where
         // must have seen us as active, and any future retirements must see us as active.
         // the bin and its nodes cannot be dropped until at least after we drop our guard.
         let node = unsafe { node.deref() };
-        Some(match **node {
+        Some(match *node {
             BinEntry::Node(ref n) => n,
             BinEntry::TreeNode(ref tn) => &tn.node,
             _ => panic!("`Table::find` should always return a Node"),
@@ -1280,7 +1279,7 @@ where
         // safety: the lifetime of the reference is bound to the guard
         // supplied which means that the memory will not be modified
         // until at least after the guard goes out of scope
-        unsafe { v.as_ref().map(|linked| &**linked) }
+        unsafe { v.as_ref().map(|linked| &*linked) }
     }
 
     /// Returns the key-value pair corresponding to `key`.
@@ -1306,7 +1305,7 @@ where
         // safety: the lifetime of the reference is bound to the guard
         // supplied which means that the memory will not be modified
         // until at least after the guard goes out of scope
-        unsafe { v.as_ref() }.map(|v| (&node.key, &**v))
+        unsafe { v.as_ref() }.map(|v| (&node.key, &*v))
     }
 
     pub(crate) fn guarded_eq(&self, other: &Self) -> bool
@@ -1360,7 +1359,7 @@ where
             }
             // Safety: node is a valid pointer because we checked
             // it in the above if stmt.
-            match **unsafe { raw_node.deref() } {
+            match *unsafe { raw_node.deref() } {
                 BinEntry::Moved => {
                     table = self.help_transfer(table);
                     // start from the first bin again in the new table
@@ -1600,7 +1599,7 @@ where
                         assert!(!changed.current.is_null());
                         bin = changed.current;
                         // FIXME: clone?
-                        if let BinEntry::Node(node) = unsafe { &**changed.new.into_box() } {
+                        if let BinEntry::Node(node) = unsafe { &*changed.new.into_box() } {
                             key = node.key.clone();
                         } else {
                             unreachable!("we declared node and it is a BinEntry::Node");
@@ -1627,7 +1626,7 @@ where
             // swap happened, it must have happened _after_ we read. since we did the read while
             // the current thread was marked as active, we must be included in the reference count,
             // and the drop must happen _after_ we decrement the count (i.e drop our guard).
-            match **unsafe { bin.deref() } {
+            match *unsafe { bin.deref() } {
                 BinEntry::Moved => {
                     table = self.help_transfer(table);
                     continue;
@@ -1932,7 +1931,7 @@ where
             // swap happened, it must have happened _after_ we read. since we did the read while
             // the current thread was marked as active, we must be included in the reference count,
             // and the drop must happen _after_ we decrement the count (i.e drop our guard).
-            match **unsafe { bin.deref() } {
+            match *unsafe { bin.deref() } {
                 BinEntry::Moved => {
                     table = self.help_transfer(table);
                     continue;
@@ -2163,7 +2162,7 @@ where
             // decrement count
             self.add_count(-1, Some(bin_count));
         }
-        new_val.map(|linked| &**linked)
+        new_val.map(|linked| &*linked)
     }
 
     /// Removes a key-value pair from the map, and returns the removed value (if any).
@@ -2185,7 +2184,7 @@ where
     /// assert_eq!(map.pin().remove(&1), Some(&"a"));
     /// assert_eq!(map.pin().remove(&1), None);
     /// ```
-    pub fn remove<'g, Q>(&self, key: &Q) -> Option<Gc<V>>
+    pub fn remove<'g, Q>(&'g self, key: &Q) -> Option<&'g V>
     where
         K: Borrow<Q>,
         Q: ?Sized + Hash + Ord,
@@ -2217,7 +2216,7 @@ where
     /// assert_eq!(map.remove_entry(&1, &guard), Some((&1, &"a")));
     /// assert_eq!(map.remove(&1, &guard), None);
     /// ```
-    pub fn remove_entry<'g, Q>(&'g self, key: &Q) -> Option<(&'g K, Gc<V>)>
+    pub fn remove_entry<'g, Q>(&'g self, key: &Q) -> Option<(&'g K, &'g V)>
     where
         K: Borrow<Q>,
         Q: ?Sized + Hash + Ord,
@@ -2247,7 +2246,7 @@ where
         key: &Q,
         new_value: Option<V>,
         observed_value: Option<Shared<'g, V>>,
-    ) -> Option<(&'g K, Gc<V>)>
+    ) -> Option<(&'g K, &'g V)>
     where
         K: Borrow<Q>,
         Q: ?Sized + Hash + Ord,
@@ -2301,7 +2300,7 @@ where
             // swap happened, it must have happened _after_ we read. since we did the read while
             // the current thread was marked as active, we must be included in the reference count,
             // and the drop must happen _after_ we decrement the count (i.e drop our guard).
-            match **unsafe { bin.deref() } {
+            match *unsafe { bin.deref() } {
                 BinEntry::Moved => {
                     table = self.help_transfer(table);
                     continue;
@@ -2464,7 +2463,7 @@ where
                 // safety: the lifetime of the reference is bound to the guard
                 // supplied which means that the memory will not be freed
                 // until at least after the guard goes out of scope
-                return unsafe { val.as_ref() }.map(move |v| (key, *v));
+                return unsafe { val.as_ref() }.map(move |v| (key, &*v));
             }
             break;
         }
@@ -2559,7 +2558,7 @@ where
             // safety: we loaded `bin` while holding a guard.
             // if the bin was replaced since then, the old bin still
             // won't be dropped until after we release our guard.
-            match **unsafe { bin.deref() } {
+            match *unsafe { bin.deref() } {
                 BinEntry::Node(ref node) => {
                     let lock = node.lock.lock();
                     // check if `bin` is still the head
@@ -2746,7 +2745,6 @@ where
     }
 }
 
-/*
 impl<K, V, S> Drop for HashMap<K, V, S> {
     fn drop(&mut self) {
         // safety: we have &mut self _and_ all references we have returned are bound to the
@@ -2756,7 +2754,6 @@ impl<K, V, S> Drop for HashMap<K, V, S> {
         // NOTE: we _could_ relax the bounds in all the methods that return `&'g ...` to not also
         // bound `&self` by `'g`, but if we did that, we would need to use a regular `Guard`
         // here rather than an unprotected one.
-        let guard = unsafe { Guard::unprotected() };
 
         assert!(self.next_table.load(Ordering::SeqCst).is_null());
         let table = self.table.swap(Shared::null(), Ordering::SeqCst);
@@ -2771,7 +2768,6 @@ impl<K, V, S> Drop for HashMap<K, V, S> {
         table.drop_bins();
     }
 }
-*/
 
 impl<K, V, S> Extend<(K, V)> for &HashMap<K, V, S>
 where
@@ -3097,7 +3093,7 @@ fn no_replacement_return_val() {
             map.put(42, String::from("world"), true),
             PutResult::Exists {
                 current: &String::from("hello"),
-                not_inserted: Box::new(Gc::new(String::from("world"))),
+                not_inserted: Box::new(String::from("world")),
             }
         );
     }
@@ -3194,7 +3190,7 @@ mod tree_bins {
             let t = unsafe { t.deref() };
             let bini = t.bini(0);
             let bin = t.bin(bini);
-            match unsafe { &**bin.deref() } {
+            match unsafe { &*bin.deref() } {
                 BinEntry::Tree(_) => {} // pass
                 BinEntry::Moved => panic!("bin was not correctly treeified -- is Moved"),
                 BinEntry::Node(_) => panic!("bin was not correctly treeified -- is Node"),
@@ -3285,7 +3281,7 @@ mod tree_bins {
             let t = unsafe { t.deref() };
             let bini = t.bini(0);
             let bin = t.bin(bini);
-            match unsafe { &**bin.deref() } {
+            match unsafe { &*bin.deref() } {
                 BinEntry::Tree(_) => {} // pass
                 BinEntry::Moved => panic!("bin was not correctly treeified -- is Moved"),
                 BinEntry::Node(_) => panic!("bin was not correctly treeified -- is Node"),
@@ -3305,7 +3301,7 @@ mod tree_bins {
             let t = unsafe { t.deref() };
             let bini = t.bini(0);
             let bin = t.bin(bini);
-            match unsafe { &**bin.deref() } {
+            match unsafe { &*bin.deref() } {
                 BinEntry::Tree(_) => panic!("bin was not correctly untreeified -- is Tree"),
                 BinEntry::Moved => panic!("bin was not correctly untreeified -- is Moved"),
                 BinEntry::Node(_) => {} // pass
