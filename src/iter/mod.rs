@@ -25,7 +25,7 @@ impl<'g, K, V> Iterator for Iter<'g, K, V> {
     fn next(&mut self) -> Option<Self::Item> {
         // safety: flurry does not drop or move until after guard drop
         self.next_internal()
-            .map(|(k, v)| unsafe { (k, &*v.deref()) })
+            .map(|(k, v)| unsafe { (k, v.deref()) })
     }
 }
 

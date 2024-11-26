@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::{fmt, ptr};
 
-pub(crate) struct Atomic<T>(AtomicPtr<T>); // AtomicPtr<T>
+pub(crate) struct Atomic<T>(AtomicPtr<T>);
 
 impl<T> Atomic<T> {
     pub(crate) fn null() -> Self {
@@ -84,10 +84,14 @@ pub(crate) struct Shared<'g, T> {
     _g: PhantomData<&'g ()>,
 }
 
-impl<'g, T: std::gc::ReferenceFree> Shared<'g, T> {
+impl<'g, T> Shared<'g, T> {
     // FIXME
     pub(crate) fn boxed(value: T) -> Self {
-        Shared::from(Gc::into_raw(Gc::new(value)) as *mut T)
+        //Shared::from(Gc::into_raw(Gc::new(value)) as *mut T)
+        Shared {
+            ptr: Some(Gc::new(value)),
+            _g: PhantomData,
+        }
     }
 }
 
@@ -114,6 +118,10 @@ impl<'g, T> Shared<'g, T> {
 
     pub(crate) unsafe fn deref(&self) -> &'g T {
         &*Into::<*mut T>::into(*self)
+        //*self.ptr.unwrap()
+        //self.ptr.as_ref().unwrap().as_ref()
+        //std::ops::Deref::deref(self.ptr.as_ref().unwrap()) //&Option<T> -> Option<&T>
+        //&*(self.ptr.unwrap())
     }
 
     pub(crate) fn is_null(&self) -> bool {

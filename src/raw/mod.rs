@@ -238,8 +238,11 @@ impl<K, V> Table<K, V> {
     }
 }
 
+/*
 impl<K, V> Drop for Table<K, V> {
     fn drop(&mut self) {
+        //println!("\ndropping table");
+        //println!("{}", std::backtrace::Backtrace::capture());
         // since BinEntry::Nodes are either dropped by drop_bins or transferred to a new table,
         // all bins are empty or contain a Shared pointing to shared the BinEntry::Moved (if
         // self.bins was not replaced by drop_bins anyway)
@@ -277,12 +280,13 @@ impl<K, V> Drop for Table<K, V> {
         );
 
         // safety: we have mut access to self, so no-one else will drop this value under us.
-        let moved = unsafe { moved.into_box() };
-        drop(moved);
+        //let moved = unsafe { moved.into_box() };
+        //drop(moved);
 
         // NOTE that the current table _is not_ responsible for `defer_destroy`ing the _next_ table
     }
 }
+*/
 
 impl<K, V> Table<K, V> {
     #[inline]

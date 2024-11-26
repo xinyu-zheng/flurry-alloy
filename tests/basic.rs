@@ -343,8 +343,14 @@ fn current_kv_dropped() {
     assert_eq!(Arc::strong_count(&dropped1), 2);
     assert_eq!(Arc::strong_count(&dropped2), 2);
     drop(map);
+    //let e = map.get_key_value(&dropped1);
+    //assert!(e.is_none());
 
+    GcAllocator::force_gc();
+    GcAllocator::finalize_all();
+    //println!("{:?}", std::gc::stats());
     //GcAllocator::force_gc();
+    //println!("{:?}", std::gc::stats());
     //let ten_seconds = time::Duration::from_millis(10000);
 
     //thread::sleep(ten_seconds);

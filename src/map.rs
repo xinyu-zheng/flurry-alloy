@@ -5,7 +5,6 @@ use crate::reclaim::{Atomic, Shared};
 use std::borrow::Borrow;
 use std::error::Error;
 use std::fmt::{self, Debug, Display, Formatter};
-use std::gc::ReferenceFree;
 use std::hash::{BuildHasher, Hash};
 use std::sync::atomic::{AtomicIsize, Ordering};
 
@@ -1469,7 +1468,7 @@ where
 impl<K, V, S> HashMap<K, V, S>
 where
     K: Sync + Send + Clone + Hash + Ord,
-    V: Sync + Send + std::gc::ReferenceFree,
+    V: Sync + Send,
     S: BuildHasher,
 {
     /// Inserts a key-value pair into the map.
@@ -2747,6 +2746,8 @@ where
 
 impl<K, V, S> Drop for HashMap<K, V, S> {
     fn drop(&mut self) {
+        //println!("\ndropping map");
+        //println!("{}", std::backtrace::Backtrace::capture());
         // safety: we have &mut self _and_ all references we have returned are bound to the
         // lifetime of their borrow of self, so there cannot be any outstanding references to
         // anything in the map.
@@ -2761,18 +2762,16 @@ impl<K, V, S> Drop for HashMap<K, V, S> {
             // table was never allocated!
             return;
         }
-
         // FIXME: safety
         // safety: same as above + we own the table
-        let mut table = unsafe { table.into_box() };
-        table.drop_bins();
+        //unsafe { (*table.as_ptr()).drop_bins() };
     }
 }
 
 impl<K, V, S> Extend<(K, V)> for &HashMap<K, V, S>
 where
     K: Sync + Send + Clone + Hash + Ord,
-    V: Sync + Send + std::gc::ReferenceFree,
+    V: Sync + Send,
     S: BuildHasher,
 {
     fn extend<T: IntoIterator<Item = (K, V)>>(&mut self, iter: T) {
@@ -2796,7 +2795,7 @@ where
 impl<'a, K, V, S> Extend<(&'a K, &'a V)> for &HashMap<K, V, S>
 where
     K: Sync + Send + Copy + Hash + Ord,
-    V: Sync + Send + Copy + ReferenceFree,
+    V: Sync + Send + Copy,
     S: BuildHasher,
 {
     fn extend<T: IntoIterator<Item = (&'a K, &'a V)>>(&mut self, iter: T) {
@@ -2807,7 +2806,7 @@ where
 impl<K, V, S> FromIterator<(K, V)> for HashMap<K, V, S>
 where
     K: Sync + Send + Clone + Hash + Ord,
-    V: Sync + Send + std::gc::ReferenceFree,
+    V: Sync + Send,
     S: BuildHasher + Default,
 {
     fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
@@ -2829,7 +2828,7 @@ where
 impl<'a, K, V, S> FromIterator<(&'a K, &'a V)> for HashMap<K, V, S>
 where
     K: Sync + Send + Copy + Hash + Ord,
-    V: Sync + Send + Copy + ReferenceFree,
+    V: Sync + Send + Copy,
     S: BuildHasher + Default,
 {
     fn from_iter<T: IntoIterator<Item = (&'a K, &'a V)>>(iter: T) -> Self {
@@ -2840,7 +2839,7 @@ where
 impl<'a, K, V, S> FromIterator<&'a (K, V)> for HashMap<K, V, S>
 where
     K: Sync + Send + Copy + Hash + Ord,
-    V: Sync + Send + Copy + ReferenceFree,
+    V: Sync + Send + Copy,
     S: BuildHasher + Default,
 {
     fn from_iter<T: IntoIterator<Item = &'a (K, V)>>(iter: T) -> Self {
@@ -2851,7 +2850,7 @@ where
 impl<K, V, S> Clone for HashMap<K, V, S>
 where
     K: Sync + Send + Clone + Hash + Ord,
-    V: Sync + Send + Clone + ReferenceFree,
+    V: Sync + Send + Clone,
     S: BuildHasher + Clone,
 {
     fn clone(&self) -> HashMap<K, V, S> {

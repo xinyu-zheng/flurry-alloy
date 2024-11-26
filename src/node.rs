@@ -16,8 +16,6 @@ pub(crate) enum BinEntry<K, V> {
     Moved,
 }
 
-impl<K, V> std::gc::ReferenceFree for BinEntry<K, V> {}
-
 unsafe impl<K, V> Send for BinEntry<K, V>
 where
     K: Send,
@@ -907,9 +905,7 @@ impl<K, V> Drop for TreeBin<K, V> {
         unsafe { self.drop_fields(true) };
     }
 }
-*/
 
-/*
 impl<K, V> TreeBin<K, V> {
     /// Defers dropping the given tree bin without its nodes' values.
     ///
