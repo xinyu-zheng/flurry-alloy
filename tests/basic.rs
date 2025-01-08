@@ -342,12 +342,12 @@ fn current_kv_dropped() {
     map.insert(dropped1.clone(), dropped2.clone());
     assert_eq!(Arc::strong_count(&dropped1), 2);
     assert_eq!(Arc::strong_count(&dropped2), 2);
-    drop(map);
+    //drop(map);
     //let e = map.get_key_value(&dropped1);
     //assert!(e.is_none());
-
     GcAllocator::force_gc();
     GcAllocator::finalize_all();
+
     //println!("{:?}", std::gc::stats());
     //GcAllocator::force_gc();
     //println!("{:?}", std::gc::stats());
@@ -358,6 +358,19 @@ fn current_kv_dropped() {
     // dropping the map should immediately drop (not deferred) all keys and values
     assert_eq!(Arc::strong_count(&dropped1), 1);
     assert_eq!(Arc::strong_count(&dropped2), 1);
+}
+
+#[test]
+fn try_ins() {
+    let map = HashMap::new();
+    map.insert(37, Arc::new(1));
+
+    let b = Arc::new(2);
+    match map.try_insert(37, b) {
+        Ok(_) => todo!(),
+        //Err(err) => map.insert(38, *err.not_inserted),
+        Err(err) => map.insert(38, err.not_inserted.clone()),
+    };
 }
 
 #[test]

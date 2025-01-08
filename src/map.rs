@@ -140,7 +140,7 @@ enum PutResult<'a, T> {
     },
     Exists {
         current: &'a T,
-        not_inserted: Box<T>,
+        not_inserted: &'a T,
     },
 }
 
@@ -169,7 +169,7 @@ pub struct TryInsertError<'a, V> {
     /// A reference to the current value mapped to the key.
     pub current: &'a V,
     /// The value that [`HashMap::try_insert`] failed to insert.
-    pub not_inserted: V,
+    pub not_inserted: &'a V,
 }
 
 impl<'a, V> Display for TryInsertError<'a, V>
@@ -1537,7 +1537,7 @@ where
                 not_inserted,
             } => Err(TryInsertError {
                 current,
-                not_inserted: *not_inserted,
+                not_inserted,
             }),
             PutResult::Inserted { new } => Ok(new),
             PutResult::Replaced { .. } => {
@@ -1598,7 +1598,7 @@ where
                         assert!(!changed.current.is_null());
                         bin = changed.current;
                         // FIXME: clone?
-                        if let BinEntry::Node(node) = unsafe { &*changed.new.into_box() } {
+                        if let BinEntry::Node(node) = unsafe { changed.new.deref() } {
                             key = node.key.clone();
                         } else {
                             unreachable!("we declared node and it is a BinEntry::Node");
@@ -1641,7 +1641,7 @@ where
                     // is the last remaining pointer to the initial value.
                     return PutResult::Exists {
                         current: unsafe { v.deref() },
-                        not_inserted: unsafe { value.into_box() },
+                        not_inserted: unsafe { value.deref() },
                     };
                 }
                 BinEntry::Node(ref head) => {
@@ -1684,7 +1684,7 @@ where
                                 // safety: we own value and did not share it
                                 return PutResult::Exists {
                                     current: current_value,
-                                    not_inserted: unsafe { value.into_box() },
+                                    not_inserted: unsafe { value.deref() },
                                 };
                             } else {
                                 // update the value in the existing node
@@ -1773,7 +1773,7 @@ where
                             // safety: we own value and did not share it
                             return PutResult::Exists {
                                 current: current_value,
-                                not_inserted: unsafe { value.into_box() },
+                                not_inserted: unsafe { value.deref() },
                             };
                         } else {
                             let _ = tree_node.node.value.swap(value, Ordering::SeqCst);
@@ -3092,7 +3092,7 @@ fn no_replacement_return_val() {
             map.put(42, String::from("world"), true),
             PutResult::Exists {
                 current: &String::from("hello"),
-                not_inserted: Box::new(String::from("world")),
+                not_inserted: &String::from("world"),
             }
         );
     }

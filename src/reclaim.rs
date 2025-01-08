@@ -100,10 +100,6 @@ impl<'g, T> Shared<'g, T> {
         Shared::from(ptr::null_mut())
     }
 
-    //pub(crate) unsafe fn into_boxt(self) -> Box<T> {
-    //    Box::from_raw(Gc::into_raw(*self.ptr) as *mut T)
-    //}
-
     pub(crate) unsafe fn into_box(self) -> Box<T> {
         Box::from_raw(Into::<*mut T>::into(self))
     }
