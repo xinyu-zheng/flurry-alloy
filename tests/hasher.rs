@@ -1,4 +1,4 @@
-use flurry::{DefaultHashBuilder, HashMap};
+use flurry_alloy::{DefaultHashBuilder, HashMap};
 use std::hash::{BuildHasher, BuildHasherDefault, Hasher};
 
 #[derive(Default)]

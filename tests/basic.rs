@@ -1,5 +1,5 @@
 #![feature(gc)]
-use flurry::*;
+use flurry_alloy::*;
 use std::{gc::GcAllocator, sync::Arc, thread, time};
 
 #[test]

@@ -1,5 +1,5 @@
 [package]
-name = "flurry"
+name = "flurry_alloy"
 version = "0.5.1"
 authors = ["Jon Gjengset <jon@thesquareplanet.com>"]
 edition = "2021"
